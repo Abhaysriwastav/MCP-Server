@@ -49,6 +49,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       transform: perspective(600px) rotateX(45deg) scale(1.6) translateY(-10%);
       transform-origin: center top;
       mask-image: linear-gradient(to bottom, rgba(0,0,0,0.45), transparent 80%);
+      animation: gridScroll 14s linear infinite;
+    }
+    @keyframes gridScroll {
+      0% { background-position: 0 0; }
+      100% { background-position: 0 48px; }
+    }
+    @keyframes floatCube {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-4px) rotate(3deg); }
+    }
+    @keyframes fadeUpIn {
+      from { opacity: 0; transform: translateY(10px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes shimmerSweep {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .cube-logo { animation: floatCube 4.5s ease-in-out infinite; }
+    .shimmer-bar {
+      background: linear-gradient(90deg, #3b82f6 0%, #06b6d4 40%, #a855f7 60%, #3b82f6 100%);
+      background-size: 200% 100%;
+      animation: shimmerSweep 2.2s linear infinite;
     }
     .orb {
       position: fixed;
@@ -234,6 +257,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       box-shadow:
         0 18px 40px rgba(0, 0, 0, 0.45),
         inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      animation: fadeUpIn 0.4s ease both;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .card:hover {
+      border-color: rgba(96, 165, 250, 0.3);
     }
     .card-head {
       display: flex; justify-content: space-between; align-items: center;
@@ -375,7 +403,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <header>
     <div class="brand">
       <!-- 3D Isometric Studio Cube SVG Icon -->
-      <svg width="32" height="32" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+      <svg class="cube-logo" width="32" height="32" viewBox="0 0 36 36" fill="none" aria-hidden="true">
         <defs>
           <linearGradient id="cubeTop" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stop-color="#60a5fa" />
@@ -975,7 +1003,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const pct = Math.round(j.progress_pct || 0);
         const isRendering = j.status === "rendering";
         const progressHtml = isRendering
-          ? `<div style="margin-top:6px;min-width:165px;"><div style="height:6px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#3b82f6,#06b6d4);transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:#60a5fa;margin-top:3px;">${pct}% · ${j.progress_stage || "Rendering"}</div><div class="mono" style="font-size:10px;color:var(--muted);">${computeEtaText(j)}</div></div>`
+          ? `<div style="margin-top:6px;min-width:165px;"><div style="height:6px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div class="shimmer-bar" style="height:100%;width:${pct}%;transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:#60a5fa;margin-top:3px;">${pct}% · ${j.progress_stage || "Rendering"}</div><div class="mono" style="font-size:10px;color:var(--muted);">${computeEtaText(j)}</div></div>`
           : (pct > 0 ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">${pct}%</div>` : "");
         return `
         <tr class="clickable" onclick="selectJob('${j.job_id}')">
@@ -1066,7 +1094,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           ${job.approval_id ? `<span class="mono">Approval: ${job.approval_id}</span>` : ""}
           ${actions.join("")}
         </div>
-        ${job.status === "rendering" ? `<div style="margin-bottom:12px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>${job.progress_stage || "Rendering"} (${computeEtaText(job)})</span><span class="mono">${Math.round(job.progress_pct || 0)}%</span></div><div style="height:8px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${Math.round(job.progress_pct || 0)}%;background:linear-gradient(90deg,#3b82f6,#06b6d4,#a855f7);transition:width 0.25s;"></div></div></div>` : ""}
+        ${job.status === "rendering" ? `<div style="margin-bottom:12px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>${job.progress_stage || "Rendering"} (${computeEtaText(job)})</span><span class="mono">${Math.round(job.progress_pct || 0)}%</span></div><div style="height:8px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div class="shimmer-bar" style="height:100%;width:${Math.round(job.progress_pct || 0)}%;transition:width 0.25s;"></div></div></div>` : ""}
         ${job.error ? `<div style="color:var(--red);margin-bottom:10px;">Error: ${job.error}</div>` : ""}
         <div><strong>Artifacts (${(job.artifacts || []).length}):</strong></div>
         <ul>
