@@ -72,6 +72,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
     parsed_ops = _OP_ADAPTER.validate_python(job.operations)
     watermark_sources: dict[str, SourceAsset] = {}
     voice_reference_sources: dict[str, SourceAsset] = {}
+    bgm_sources: dict[str, SourceAsset] = {}
     for op in parsed_ops:
         if op.op == "watermark":
             wm_src = app.store.get_source(op.image_source_id)
@@ -83,6 +84,11 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             if ref_src is None:
                 raise ValueError(f"Missing voice reference source: {op.reference_audio_source_id}")
             voice_reference_sources[op.reference_audio_source_id] = ref_src
+        elif op.op == "background_music":
+            bgm_src = app.store.get_source(op.audio_source_id)
+            if bgm_src is None:
+                raise ValueError(f"Missing background music source: {op.audio_source_id}")
+            bgm_sources[op.audio_source_id] = bgm_src
 
     job.status = JobStatus.RENDERING
     job.progress_pct = 0.0
@@ -126,6 +132,8 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             output_profile=job.output_profile,
             watermark_sources=watermark_sources,
             voice_reference_sources=voice_reference_sources,
+            bgm_sources=bgm_sources,
+            job_title=job.title,
             progress_cb=_on_progress,
             control=handle,
         )

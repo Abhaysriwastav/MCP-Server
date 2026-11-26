@@ -18,7 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIDEO_MCP_FFMPEG_HWACCEL=auto
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git ca-certificates libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv
 

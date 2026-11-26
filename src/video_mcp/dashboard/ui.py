@@ -429,15 +429,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <span class="live-pill"><span class="dot"></span><span id="conn-label">LIVE</span></span>
       <span class="mono" id="hw-pill" style="padding:3px 10px;border-radius:999px;font-size:11px;background:rgba(59,130,246,0.14);border:1px solid rgba(96,165,250,0.35);color:#93c5fd;">CPU · omnivoice</span>
     </div>
-    <nav>
-      <button class="tab-btn active" onclick="switchTab('live', this)">Live Studio</button>
+    <nav id="main-nav">
+      <button class="tab-btn active" onclick="switchTab('overview', this)">Overview</button>
+      <button class="tab-btn" onclick="switchTab('ingest', this)">Ingest</button>
+      <button class="tab-btn" onclick="switchTab('studio', this)">Edit Studio</button>
+      <button class="tab-btn" onclick="switchTab('dialogue', this)">Dialogue Clipper</button>
+      <button class="tab-btn" onclick="switchTab('jobs', this)">Jobs &amp; Activity</button>
       <button class="tab-btn" onclick="switchTab('config', this)">Configuration</button>
       <button class="tab-btn" onclick="refreshAll()">Refresh</button>
     </nav>
   </header>
 
   <main>
-    <section id="tab-live">
+    <section id="tab-overview">
       <!-- 3D Studio Hero & Live Graphics -->
       <div class="hero-3d">
         <div>
@@ -532,7 +536,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+    </section>
 
+    <section id="tab-ingest" class="hidden">
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
           <span>Ingest Video (Device Upload or YouTube / URL)</span>
@@ -540,7 +546,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div class="card-body">
           <div class="upload-box" id="drop-zone">
-            <input type="file" id="video-file" accept="video/*,.mp4,.mov,.mkv,.webm" />
+            <input type="file" id="video-file" accept="video/*,audio/*,image/*,.mp4,.mov,.mkv,.webm,.mp3,.wav,.m4a,.png,.jpg,.jpeg,.webp" />
             <input type="text" id="upload-title" placeholder="Job title (optional)" style="max-width: 200px;" />
             <select id="upload-profile">
               <option value="both">Both (16:9 + 9:16 + metadata)</option>
@@ -559,10 +565,46 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <input type="checkbox" id="upload-voiceclone" />
               <span>AI Voice Clone</span>
             </label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+              <input type="checkbox" id="upload-norm" checked />
+              <span>Audio Normalize (-14 LUFS)</span>
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+              <input type="checkbox" id="upload-nosilence" />
+              <span>Remove Silences</span>
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+              <input type="checkbox" id="upload-facecrop" checked />
+              <span>Smart Face-Track 9:16</span>
+            </label>
             <button class="btn" id="upload-btn" onclick="uploadSelectedVideo()">Upload File</button>
             <div style="width:100%;display:flex;gap:10px;align-items:center;margin-top:4px;">
               <input type="text" id="ingest-url" placeholder="Paste YouTube URL (youtube.com / youtu.be / shorts) or HTTP/S3 URL..." style="flex:1;" />
               <button class="btn btn-sec" id="ingest-url-btn" onclick="ingestUrl()">Ingest YouTube / URL</button>
+            </div>
+            <div style="width:100%;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <input type="text" id="upload-hook" placeholder="Hook Text Overlay (optional)" style="flex:1;min-width:220px;" />
+              <select id="upload-hook-pos">
+                <option value="top">Top</option>
+                <option value="center">Center</option>
+                <option value="bottom" selected>Bottom</option>
+              </select>
+              <select id="upload-dub-lang" title="Target AI Dub Language">
+                <option value="">Dub Language: Original</option>
+                <option value="en">Dub: English (en)</option>
+                <option value="hi">Dub: Hindi (hi)</option>
+                <option value="es">Dub: Spanish (es)</option>
+                <option value="fr">Dub: French (fr)</option>
+                <option value="de">Dub: German (de)</option>
+                <option value="ja">Dub: Japanese (ja)</option>
+              </select>
+              <select id="upload-color" title="Color Look Preset">
+                <option value="original">Color: Original</option>
+                <option value="cinematic">Color: Cinematic</option>
+                <option value="vivid">Color: Vivid Pop</option>
+                <option value="warm">Color: Warm</option>
+                <option value="bw">Color: B&amp;W</option>
+              </select>
             </div>
             <div style="width:100%;display:flex;gap:10px;align-items:center;">
               <input type="text" id="voice-script-input" placeholder="Optional AI Voice Script (leave blank to auto-transcribe &amp; re-voice spoken audio)" style="flex:1;" />
@@ -573,7 +615,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+    </section>
 
+    <section id="tab-dialogue" class="hidden">
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
           <span>Clip Viral Dialogue (Transcript Search)</span>
@@ -589,6 +633,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div id="dialogue-results" style="margin-top:12px;"></div>
         </div>
       </div>
+    </section>
+
+    <section id="tab-studio" class="hidden">
 
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
@@ -596,20 +643,45 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="mono">No MCP client needed</span>
         </div>
         <div class="card-body">
+          <div id="builder-preview-wrap" style="position:relative;margin-bottom:12px;border-radius:10px;overflow:hidden;background:#050814;border:1px solid var(--border);display:none;">
+            <div style="position:relative;width:100%;display:flex;justify-content:center;background:#000;overflow:hidden;">
+              <video id="builder-preview-video" controls preload="metadata" style="width:100%;max-height:320px;display:block;background:#000;transition:filter 0.2s;"></video>
+              <div id="builder-916-guide" style="display:none;position:absolute;top:0;bottom:0;left:50%;transform:translateX(-50%);aspect-ratio:9/16;height:100%;border:2px dashed rgba(56,189,248,0.95);box-shadow:0 0 0 9999px rgba(2,6,23,0.55);pointer-events:none;">
+                <span style="position:absolute;top:6px;left:6px;font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(14,165,233,0.85);color:#fff;font-weight:700;">9:16 Safe Zone</span>
+              </div>
+              <div id="builder-hook-preview" style="display:none;position:absolute;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(0,0,0,0.68);color:#fff;font-weight:700;font-size:15px;pointer-events:none;text-align:center;max-width:88%;text-shadow:0 1px 4px #000;"></div>
+              <div id="builder-caption-preview" style="display:none;position:absolute;left:50%;transform:translateX(-50%);padding:4px 12px;border-radius:6px;background:rgba(0,0,0,0.72);color:#fff;font-weight:700;font-size:16px;pointer-events:none;text-align:center;max-width:86%;text-shadow:0 1px 3px #000;">Sample AI Caption Preview</div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(15,23,42,0.85);border-top:1px solid var(--border);">
+              <span class="mono" id="builder-time-readout" style="font-size:12px;">0.0s / 0.0s</span>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <label style="display:inline-flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="builder-guide-916" onchange="updateBuilderOverlays()" /><span>9:16 Guide</span></label>
+                <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="setBuilderTime('start')">Set Start = Current</button>
+                <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="setBuilderTime('end')">Set End = Current</button>
+                <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="previewBuilderTrim()">Play Trim</button>
+              </div>
+            </div>
+          </div>
           <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
-            <select id="builder-source" style="min-width:220px;max-width:280px;"></select>
+            <select id="builder-source" style="min-width:220px;max-width:280px;" onchange="updateBuilderPreview()"></select>
+            <button type="button" class="btn btn-sec" style="padding:6px 10px;font-size:12px;" onclick="addMontageClip()">+ Montage Clip</button>
             <input type="text" id="builder-title" placeholder="Edit title (optional)" style="max-width:200px;" />
-            <input type="number" id="builder-start" placeholder="Start (s)" min="0" step="0.5" style="width:100px;" />
-            <input type="number" id="builder-end" placeholder="End (s)" min="0.5" step="0.5" style="width:100px;" />
-            <input type="number" id="builder-speed" value="1.0" min="0.25" max="4.0" step="0.25" style="width:95px;" title="Speed factor" />
+            <input type="number" id="builder-start" placeholder="Start (s)" min="0" step="0.5" style="width:95px;" />
+            <input type="number" id="builder-end" placeholder="End (s)" min="0.5" step="0.5" style="width:95px;" />
+            <input type="number" id="builder-speed" value="1.0" min="0.25" max="4.0" step="0.25" style="width:85px;" title="Speed factor" />
             <select id="builder-profile">
               <option value="both">Both (16:9 + 9:16)</option>
               <option value="landscape_16x9">16:9 Only</option>
               <option value="vertical_9x16">9:16 Only</option>
             </select>
           </div>
+          <div id="builder-montage-wrap" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:8px;background:rgba(15,23,42,0.55);border:1px solid var(--border);align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="mono" style="font-size:12px;">Montage Sequence:</span>
+            <div id="builder-montage-list" style="display:flex;gap:6px;flex-wrap:wrap;flex:1;"></div>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Crossfade (s): <input type="number" id="builder-crossfade" value="0.5" min="0" max="2.5" step="0.1" style="width:70px;" /></label>
+          </div>
           <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
-            <input type="text" id="builder-hook" placeholder="Hook Text Overlay (optional)" style="flex:1;min-width:220px;" />
+            <input type="text" id="builder-hook" placeholder="Hook Text Overlay (optional)" style="flex:1;min-width:200px;" />
             <select id="builder-hook-pos">
               <option value="top">Top</option>
               <option value="center">Center</option>
@@ -624,18 +696,59 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="de">Dub: German (de)</option>
               <option value="ja">Dub: Japanese (ja)</option>
             </select>
+            <select id="builder-color" title="Color Look Preset" onchange="updateBuilderOverlays()">
+              <option value="original">Color: Original</option>
+              <option value="cinematic">Color: Cinematic</option>
+              <option value="vivid">Color: Vivid Pop</option>
+              <option value="warm">Color: Warm</option>
+              <option value="bw">Color: B&amp;W</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+            <select id="builder-bgm-source" style="min-width:190px;max-width:240px;" title="Background Music Source">
+              <option value="">BGM: None</option>
+            </select>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">BGM Vol: <input type="number" id="builder-bgm-vol" value="0.22" min="0.05" max="1.0" step="0.05" style="width:70px;" /></label>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="builder-bgm-duck" checked /><span>Auto-Duck Voice</span></label>
+            <select id="builder-wm-source" style="min-width:180px;max-width:230px;" title="Watermark Image Source">
+              <option value="">Watermark: None</option>
+            </select>
+            <select id="builder-wm-pos" title="Watermark Corner">
+              <option value="bottom-right" selected>WM: Bottom-Right</option>
+              <option value="top-right">WM: Top-Right</option>
+              <option value="bottom-left">WM: Bottom-Left</option>
+              <option value="top-left">WM: Top-Left</option>
+            </select>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Opacity: <input type="number" id="builder-wm-opacity" value="0.85" min="0.1" max="1.0" step="0.05" style="width:70px;" /></label>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-caption" onchange="updateBuilderOverlays()" /><span>Auto-Caption</span></label>
+            <select id="builder-cap-color" onchange="updateBuilderOverlays()" title="Caption Color">
+              <option value="white" selected>Caption: White</option>
+              <option value="yellow">Caption: Yellow</option>
+              <option value="cyan">Caption: Cyan</option>
+              <option value="lime">Caption: Lime</option>
+            </select>
+            <select id="builder-cap-pos" onchange="updateBuilderOverlays()" title="Caption Position">
+              <option value="bottom" selected>Pos: Bottom</option>
+              <option value="center">Pos: Center</option>
+              <option value="top">Pos: Top</option>
+            </select>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Size: <input type="number" id="builder-cap-size" value="20" min="12" max="48" step="2" style="width:65px;" onchange="updateBuilderOverlays()" /></label>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="builder-cap-bg" checked onchange="updateBuilderOverlays()" /><span>Box BG</span></label>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-norm" checked /><span>Audio Normalize (-14 LUFS)</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-nosilence" /><span>Remove Silences</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-facecrop" checked /><span>Smart Face-Track 9:16</span></label>
-            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-caption" /><span>Auto-Caption</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-voice" /><span>AI Voice Clone</span></label>
             <button class="btn" onclick="submitCustomEdit()">Render Custom Edit</button>
           </div>
         </div>
       </div>
+    </section>
 
+    <section id="tab-jobs" class="hidden">
       <div class="grid-2">
         <div class="card">
           <div class="card-head" style="flex-wrap:wrap;gap:8px;">
@@ -764,9 +877,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function switchTab(name, btn) {
-      document.getElementById("tab-live").classList.toggle("hidden", name !== "live");
-      document.getElementById("tab-config").classList.toggle("hidden", name !== "config");
-      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      const tabs = ["overview", "ingest", "studio", "dialogue", "jobs", "config"];
+      for (const t of tabs) {
+        const el = document.getElementById(`tab-${t}`);
+        if (el) el.classList.toggle("hidden", t !== name);
+      }
+      document.querySelectorAll("#main-nav .tab-btn").forEach(b => b.classList.remove("active"));
       if (btn) btn.classList.add("active");
       if (name === "config") loadConfig();
     }
@@ -908,7 +1024,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       nodes.forEach(n => { if (n.dataset.stage === target) n.classList.add("active"); });
     }
 
+    window._sourcesMap = {};
+
     function renderSourceSelect(sources) {
+      window._sourcesMap = {};
+      for (const s of sources) window._sourcesMap[s.source_id] = s;
       for (const id of ["dialogue-source", "builder-source"]) {
         const sel = document.getElementById(id);
         if (!sel) continue;
@@ -923,15 +1043,174 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }).join("");
         if (prev && sources.some(s => s.source_id === prev)) sel.value = prev;
       }
+      const bgmSel = document.getElementById("builder-bgm-source");
+      if (bgmSel) {
+        const prevBgm = bgmSel.value;
+        bgmSel.innerHTML = `<option value="">BGM: None</option>` + sources.map(s => `<option value="${s.source_id}">BGM: ${s.filename} (${s.source_id})</option>`).join("");
+        if (prevBgm && sources.some(s => s.source_id === prevBgm)) bgmSel.value = prevBgm;
+      }
+      const wmSel = document.getElementById("builder-wm-source");
+      if (wmSel) {
+        const prevWm = wmSel.value;
+        wmSel.innerHTML = `<option value="">Watermark: None</option>` + sources.map(s => `<option value="${s.source_id}">Logo: ${s.filename} (${s.source_id})</option>`).join("");
+        if (prevWm && sources.some(s => s.source_id === prevWm)) wmSel.value = prevWm;
+      }
+      updateBuilderPreview();
     }
+
+    window._montageClips = [];
+
+    function addMontageClip() {
+      const sid = document.getElementById("builder-source").value;
+      if (!sid) {
+        showToast("Select a source clip first.");
+        return;
+      }
+      window._montageClips.push(sid);
+      renderMontageList();
+    }
+
+    function removeMontageClip(idx) {
+      window._montageClips.splice(idx, 1);
+      renderMontageList();
+    }
+
+    function renderMontageList() {
+      const wrap = document.getElementById("builder-montage-wrap");
+      const listEl = document.getElementById("builder-montage-list");
+      if (!window._montageClips.length) {
+        wrap.style.display = "none";
+        listEl.innerHTML = "";
+        return;
+      }
+      wrap.style.display = "flex";
+      listEl.innerHTML = window._montageClips.map((sid, i) => {
+        const src = window._sourcesMap[sid];
+        const name = (src && src.filename) || sid;
+        return `<span class="badge b-ready_for_review" style="display:inline-flex;align-items:center;gap:6px;">${i + 1}. ${name} <button type="button" onclick="removeMontageClip(${i})" style="background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0;">&times;</button></span>`;
+      }).join("");
+    }
+
+    function updateBuilderPreview() {
+      const wrap = document.getElementById("builder-preview-wrap");
+      const video = document.getElementById("builder-preview-video");
+      const sourceId = document.getElementById("builder-source").value;
+      const src = window._sourcesMap[sourceId];
+      if (!src || !src.local_path) {
+        wrap.style.display = "none";
+        if (video.getAttribute("src")) video.removeAttribute("src");
+        return;
+      }
+      wrap.style.display = "block";
+      const nextSrc = `/api/files?path=${encodeURIComponent(src.local_path)}`;
+      if (video.dataset.loadedPath !== nextSrc) {
+        video.dataset.loadedPath = nextSrc;
+        video.src = nextSrc;
+        video.load();
+      }
+      const spd = Number(document.getElementById("builder-speed").value || 1.0);
+      if (spd >= 0.25 && spd <= 4.0) video.playbackRate = spd;
+      updateBuilderOverlays();
+    }
+
+    function updateBuilderOverlays() {
+      updateBuilderHookPreview();
+      const guide = document.getElementById("builder-916-guide");
+      if (guide) guide.style.display = document.getElementById("builder-guide-916").checked ? "block" : "none";
+
+      const video = document.getElementById("builder-preview-video");
+      const colorPreset = document.getElementById("builder-color").value;
+      const cssFilters = {
+        original: "none",
+        cinematic: "contrast(1.12) saturate(0.88) brightness(0.98)",
+        vivid: "contrast(1.10) saturate(1.28) brightness(1.02)",
+        warm: "saturate(1.10) sepia(0.18)",
+        bw: "grayscale(1) contrast(1.15)",
+      };
+      video.style.filter = cssFilters[colorPreset] || "none";
+
+      const capEl = document.getElementById("builder-caption-preview");
+      const capOn = document.getElementById("builder-caption").checked;
+      if (!capOn) {
+        capEl.style.display = "none";
+      } else {
+        const capColor = document.getElementById("builder-cap-color").value;
+        const capPos = document.getElementById("builder-cap-pos").value;
+        const capSize = Number(document.getElementById("builder-cap-size").value || 20);
+        const capBg = document.getElementById("builder-cap-bg").checked;
+        capEl.style.display = "block";
+        capEl.style.color = capColor;
+        capEl.style.fontSize = `${Math.max(12, Math.min(34, capSize * 0.85))}px`;
+        capEl.style.background = capBg ? "rgba(0,0,0,0.72)" : "transparent";
+        capEl.style.top = capPos === "top" ? "18px" : capPos === "center" ? "46%" : "auto";
+        capEl.style.bottom = capPos === "bottom" ? "18px" : "auto";
+      }
+    }
+
+    function updateBuilderHookPreview() {
+      const el = document.getElementById("builder-hook-preview");
+      const text = document.getElementById("builder-hook").value.trim();
+      const pos = document.getElementById("builder-hook-pos").value;
+      if (!text) {
+        el.style.display = "none";
+        return;
+      }
+      el.textContent = text;
+      el.style.display = "block";
+      el.style.top = pos === "top" ? "16px" : pos === "center" ? "44%" : "auto";
+      el.style.bottom = pos === "bottom" ? "58px" : "auto";
+    }
+
+    function setBuilderTime(which) {
+      const video = document.getElementById("builder-preview-video");
+      const val = Number((video.currentTime || 0).toFixed(1));
+      document.getElementById(which === "start" ? "builder-start" : "builder-end").value = val;
+      showToast(`Set ${which} to ${val}s`);
+    }
+
+    function previewBuilderTrim() {
+      const video = document.getElementById("builder-preview-video");
+      const st = Number(document.getElementById("builder-start").value || 0);
+      const spd = Number(document.getElementById("builder-speed").value || 1.0);
+      video.currentTime = st;
+      if (spd >= 0.25 && spd <= 4.0) video.playbackRate = spd;
+      video.play();
+    }
+
+    (() => {
+      const video = document.getElementById("builder-preview-video");
+      const readout = document.getElementById("builder-time-readout");
+      const updateReadout = () => {
+        const cur = (video.currentTime || 0).toFixed(1);
+        const dur = Number.isFinite(video.duration) ? video.duration.toFixed(1) : "0.0";
+        readout.textContent = `${cur}s / ${dur}s`;
+        const en = document.getElementById("builder-end").value;
+        if (en !== "" && !video.paused && video.currentTime >= Number(en)) {
+          video.pause();
+        }
+      };
+      video.addEventListener("timeupdate", updateReadout);
+      video.addEventListener("loadedmetadata", updateReadout);
+      document.getElementById("builder-hook").addEventListener("input", updateBuilderHookPreview);
+      document.getElementById("builder-hook-pos").addEventListener("change", updateBuilderHookPreview);
+      document.getElementById("builder-speed").addEventListener("input", () => {
+        const spd = Number(document.getElementById("builder-speed").value || 1.0);
+        if (spd >= 0.25 && spd <= 4.0) video.playbackRate = spd;
+      });
+    })();
 
     async function submitCustomEdit() {
       const sourceId = document.getElementById("builder-source").value;
-      if (!sourceId) {
+      const sourceIds = window._montageClips.length ? [...window._montageClips] : (sourceId ? [sourceId] : []);
+      if (!sourceIds.length) {
         showToast("Please upload or ingest a video first.");
         return;
       }
       const ops = [];
+      if (sourceIds.length > 1) {
+        const xfade = Number(document.getElementById("builder-crossfade").value || 0.5);
+        if (xfade > 0) ops.push({ op: "crossfade_merge", transition_sec: xfade });
+      }
       const st = document.getElementById("builder-start").value;
       const en = document.getElementById("builder-end").value;
       if (st !== "" || en !== "") {
@@ -941,6 +1220,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       const spd = Number(document.getElementById("builder-speed").value || 1.0);
       if (Math.abs(spd - 1.0) > 0.01) ops.push({ op: "speed", factor: spd });
+      const colorPreset = document.getElementById("builder-color").value;
+      if (colorPreset && colorPreset !== "original") ops.push({ op: "color_preset", preset: colorPreset });
+      const wmSource = document.getElementById("builder-wm-source").value;
+      if (wmSource) {
+        ops.push({
+          op: "watermark",
+          image_source_id: wmSource,
+          position: document.getElementById("builder-wm-pos").value,
+          opacity: Number(document.getElementById("builder-wm-opacity").value || 0.85),
+        });
+      }
       if (document.getElementById("builder-nosilence").checked) ops.push({ op: "remove_silences" });
       if (document.getElementById("builder-norm").checked) ops.push({ op: "audio_normalize", target_i: -14.0 });
       const hookText = document.getElementById("builder-hook").value.trim();
@@ -952,16 +1242,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         });
       }
       if (document.getElementById("builder-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
+      const bgmSource = document.getElementById("builder-bgm-source").value;
+      if (bgmSource) {
+        ops.push({
+          op: "background_music",
+          audio_source_id: bgmSource,
+          music_volume: Number(document.getElementById("builder-bgm-vol").value || 0.22),
+          ducking: document.getElementById("builder-bgm-duck").checked,
+        });
+      }
       const dubLang = document.getElementById("builder-dub-lang").value;
       const scriptText = document.getElementById("voice-script-input").value.trim() || null;
-      if (document.getElementById("builder-voice").checked) {
+      if (document.getElementById("builder-voice").checked || dubLang) {
         ops.push({
           op: "voice_clone",
           script_text: scriptText,
           target_language: dubLang || null,
         });
       }
-      if (document.getElementById("builder-caption").checked) ops.push({ op: "auto_caption" });
+      if (document.getElementById("builder-caption").checked) {
+        ops.push({
+          op: "auto_caption",
+          font_size: Number(document.getElementById("builder-cap-size").value || 20),
+          font_color: document.getElementById("builder-cap-color").value,
+          position: document.getElementById("builder-cap-pos").value,
+          highlight_bg: document.getElementById("builder-cap-bg").checked,
+        });
+      }
 
       const title = document.getElementById("builder-title").value.trim() || "Custom Studio Edit";
       const profile = document.getElementById("builder-profile").value;
@@ -970,7 +1277,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
-          source_ids: [sourceId],
+          source_ids: sourceIds,
           output_profile: profile,
           operations: ops,
           auto_render: true,
@@ -1188,6 +1495,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const hasAutoCaption = (job.operations || []).some(op => op.op === "auto_caption");
       const hasVoiceClone = (job.operations || []).some(op => op.op === "voice_clone");
       const srtArt = (job.artifacts || []).find(a => a.kind === "subtitles_srt");
+      const socialArt = (job.artifacts || []).find(a => a.kind === "social_kit");
+      const socialMeta = (socialArt && socialArt.metadata) || null;
       if (job.status === "rendering") {
         actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','pause')">Pause</button>`);
         actions.push(`<button class="btn btn-red" onclick="jobAction('${job.job_id}','cancel')">Cancel</button>`);
@@ -1238,6 +1547,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </ul>
         ${videos.length ? `<div style="margin-top:12px;"><strong>Rendered Video Preview:</strong><div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;">${videos.map(v => `<div><div class="mono" style="margin-bottom:4px;color:var(--muted)">${v.kind} (${v.metadata?.width || ''}x${v.metadata?.height || ''})</div><video controls preload="metadata" style="max-width:340px;max-height:360px;border-radius:10px;border:1px solid var(--border);background:#000;box-shadow:0 12px 26px rgba(0,0,0,0.5)" src="/api/files?path=${encodeURIComponent(v.path)}"></video></div>`).join("")}</div></div>` : ""}
         ${thumbs.length ? `<div style="margin-top:12px;"><strong>Preview Thumbnails:</strong><div class="thumbs">${thumbs.map(t => `<img src="/api/files?path=${encodeURIComponent(t.path)}" alt="${t.kind}" />`).join("")}</div></div>` : ""}
+        ${socialMeta ? `<div style="margin-top:14px;padding:12px;border-radius:10px;background:rgba(15,23,42,0.7);border:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <strong>Social Kit (Chapters, Viral Titles &amp; Copy)</strong>
+            <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:11px;" onclick='navigator.clipboard.writeText(${JSON.stringify(socialMeta.youtube_description || "")});showToast("Copied YouTube description!");'>Copy YouTube Description</button>
+          </div>
+          <div style="font-size:12px;margin-bottom:6px;"><strong>Viral Hook Titles:</strong> ${(socialMeta.viral_titles || []).map(t => `<span class="badge b-ready_for_review" style="margin:2px;">${t}</span>`).join(" ")}</div>
+          <div style="font-size:12px;margin-bottom:6px;"><strong>Hashtags:</strong> <span class="mono">${(socialMeta.hashtags || []).join(" ")}</span></div>
+          <div style="font-size:12px;"><strong>Chapters:</strong><pre class="mono" style="margin:4px 0 0;white-space:pre-wrap;color:var(--muted);">${(socialMeta.chapters || []).map(c => c.time + " " + c.label).join("\\n")}</pre></div>
+        </div>` : ""}
       `;
     }
 
@@ -1369,12 +1687,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function maybeCreateJob(src) {
       if (!document.getElementById("upload-autorender").checked) return;
+      if (/\\.(mp3|wav|m4a|aac|flac|ogg|png|jpg|jpeg|webp)$/i.test(src.filename || "")) return;
       const ytTitle = src.probe && src.probe.youtube && src.probe.youtube.title;
       const title = document.getElementById("upload-title").value.trim() || ytTitle || src.filename;
       const profile = document.getElementById("upload-profile").value;
       const ops = [];
       const scriptText = document.getElementById("voice-script-input").value.trim() || null;
-      if (document.getElementById("upload-voiceclone").checked) ops.push({ op: "voice_clone", script_text: scriptText });
+      const hookText = document.getElementById("upload-hook").value.trim();
+      const dubLang = document.getElementById("upload-dub-lang").value;
+      const colorPreset = document.getElementById("upload-color").value;
+      if (colorPreset && colorPreset !== "original") ops.push({ op: "color_preset", preset: colorPreset });
+      if (document.getElementById("upload-nosilence").checked) ops.push({ op: "remove_silences" });
+      if (document.getElementById("upload-norm").checked) ops.push({ op: "audio_normalize", target_i: -14.0 });
+      if (hookText) {
+        ops.push({
+          op: "text_overlay",
+          text: hookText,
+          position: document.getElementById("upload-hook-pos").value,
+        });
+      }
+      if (document.getElementById("upload-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
+      if (document.getElementById("upload-voiceclone").checked || dubLang) {
+        ops.push({
+          op: "voice_clone",
+          script_text: scriptText,
+          target_language: dubLang || null,
+        });
+      }
       if (document.getElementById("upload-autocaption").checked) ops.push({ op: "auto_caption" });
       const jobRes = await fetch("/api/jobs", {
         method: "POST",

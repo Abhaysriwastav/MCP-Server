@@ -15,13 +15,17 @@ from typing import Any
 from video_mcp.media.face_tracker import estimate_face_center_x
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
 from video_mcp.media.job_control import JobControlHandle
+from video_mcp.media.social_kit import generate_social_kit
 from video_mcp.media.transcriber import Transcriber, generate_srt
 from video_mcp.media.translator import translate_segments, translate_text
 from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.models import (
     AudioNormalizeOp,
     AutoCaptionOp,
+    BackgroundMusicOp,
     BurnSubtitlesOp,
+    ColorPresetOp,
+    CrossfadeMergeOp,
     EditOperation,
     FadeOp,
     OutputProfile,
@@ -94,12 +98,30 @@ def _parse_srt_cues(srt_text: str) -> list[tuple[float, float, str]]:
     return cues
 
 
-def _subtitle_force_style(font_size: int = 20, margin_v: int = 55) -> str:
+_ASS_COLORS = {
+    "white": "&H00FFFFFF",
+    "yellow": "&H0000FFFF",
+    "cyan": "&H00FFFF00",
+    "lime": "&H0000FF00",
+    "gold": "&H0000D7FF",
+}
+
+
+def _subtitle_force_style(
+    font_size: int = 20,
+    margin_v: int = 55,
+    font_color: str = "white",
+    highlight_bg: bool = True,
+    position: str = "bottom",
+) -> str:
     """Return ASS force_style string legible across both 16:9 and 9:16 exports."""
+    primary = _ASS_COLORS.get(font_color.lower(), "&H00FFFFFF")
+    align = {"bottom": 2, "center": 5, "top": 8}.get(position, 2)
+    border_style = 4 if highlight_bg else 1
     return (
         f"FontName=Arial,FontSize={font_size},Bold=1,"
-        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,"
-        f"BorderStyle=1,Outline=2,Shadow=1,MarginV={margin_v},Alignment=2"
+        f"PrimaryColour={primary},OutlineColour=&H00000000,BackColour=&H99000000,"
+        f"BorderStyle={border_style},Outline=2,Shadow=1,MarginV={margin_v},Alignment={align}"
     )
 
 
@@ -158,6 +180,8 @@ class VideoPipeline:
         output_profile: OutputProfile,
         watermark_sources: dict[str, SourceAsset] | None = None,
         voice_reference_sources: dict[str, SourceAsset] | None = None,
+        bgm_sources: dict[str, SourceAsset] | None = None,
+        job_title: str = "Studio Video",
         progress_cb: Callable[[float, str], None] | None = None,
         control: JobControlHandle | None = None,
     ) -> list[RenderedArtifact]:
@@ -182,6 +206,28 @@ class VideoPipeline:
         thumb_dir = self.workspace_dir / "thumbnails" / job_id
         thumb_dir.mkdir(parents=True, exist_ok=True)
 
+        caption_ops = [op for op in operations if isinstance(op, AutoCaptionOp)]
+        voice_ops = [op for op in operations if isinstance(op, VoiceCloneOp)]
+        silence_ops = [op for op in operations if isinstance(op, RemoveSilencesOp)]
+        smart_crop_ops = [op for op in operations if isinstance(op, SmartCropOp)]
+        bgm_ops = [op for op in operations if isinstance(op, BackgroundMusicOp)]
+        crossfade_ops = [op for op in operations if isinstance(op, CrossfadeMergeOp)]
+        pre_caption_ops = [
+            op
+            for op in operations
+            if not isinstance(
+                op,
+                (
+                    AutoCaptionOp,
+                    VoiceCloneOp,
+                    RemoveSilencesOp,
+                    SmartCropOp,
+                    BackgroundMusicOp,
+                    CrossfadeMergeOp,
+                ),
+            )
+        ]
+
         _report(2.0, "Preparing source")
         # Step 1: Prepare base input (single clip or concatenated multi-clip)
         if len(sources) == 1:
@@ -191,22 +237,14 @@ class VideoPipeline:
         else:
             base_input = job_dir / "concat_base.mp4"
             _report(5.0, "Concatenating clips")
-            has_audio = await self._concat_sources(sources, base_input)
+            xfade_sec = crossfade_ops[-1].transition_sec if crossfade_ops else 0.0
+            has_audio = await self._concat_sources(sources, base_input, transition_sec=xfade_sec)
             base_duration = sum(float(s.probe.get("duration_sec") or 0.0) for s in sources)
 
         # Step 2: Separate voice_clone and auto_caption from pre-caption edit ops
         # so trim/concat/speed run first, then transcription, AI voice replacement,
         # and SRT generation run on the cut clip (timestamps at 00:00:00,000) before
         # splitting into 16:9 and 9:16.
-        caption_ops = [op for op in operations if isinstance(op, AutoCaptionOp)]
-        voice_ops = [op for op in operations if isinstance(op, VoiceCloneOp)]
-        silence_ops = [op for op in operations if isinstance(op, RemoveSilencesOp)]
-        smart_crop_ops = [op for op in operations if isinstance(op, SmartCropOp)]
-        pre_caption_ops = [
-            op
-            for op in operations
-            if not isinstance(op, (AutoCaptionOp, VoiceCloneOp, RemoveSilencesOp, SmartCropOp))
-        ]
         artifacts: list[RenderedArtifact] = []
 
         if pre_caption_ops:
@@ -369,11 +407,34 @@ class VideoPipeline:
                 has_audio=bool(pre_probe.get("has_audio", has_audio)),
                 font_size=cap_op.font_size,
                 margin_v=cap_op.margin_v,
+                font_color=cap_op.font_color,
+                highlight_bg=cap_op.highlight_bg,
+                position=cap_op.position,
                 progress_cb=_sub_progress(62.0, 75.0, "Burning captions"),
                 duration_sec=pre_dur or None,
             )
         else:
             master_path = voiced_path
+
+        if bgm_ops:
+            await _checkpoint()
+            bgm_op = bgm_ops[-1]
+            bgm_src = (bgm_sources or {}).get(bgm_op.audio_source_id)
+            if bgm_src is None:
+                raise ValueError(f"Background music source not found: {bgm_op.audio_source_id}")
+            bgm_out = job_dir / "master_bgm.mp4"
+            _report(74.0, "Mixing background music")
+            cur_probe = await self.runner.probe(master_path)
+            await self._mix_background_music(
+                input_path=master_path,
+                bgm_path=Path(bgm_src.local_path),
+                output_path=bgm_out,
+                has_audio=bool(cur_probe.get("has_audio", has_audio)),
+                music_volume=bgm_op.music_volume,
+                ducking=bgm_op.ducking,
+            )
+            master_path = bgm_out
+            has_audio = True
 
         master_probe = await self.runner.probe(master_path)
         master_dur = float(master_probe.get("duration_sec") or base_duration or 0.0)
@@ -451,6 +512,33 @@ class VideoPipeline:
             )
         )
 
+        if cached_segments or any(
+            isinstance(
+                op,
+                (
+                    AutoCaptionOp,
+                    VoiceCloneOp,
+                    RemoveSilencesOp,
+                    SmartCropOp,
+                    BackgroundMusicOp,
+                    ColorPresetOp,
+                    CrossfadeMergeOp,
+                ),
+            )
+            for op in operations
+        ):
+            social_kit = generate_social_kit(cached_segments, job_title)
+            social_kit_path = job_dir / "social_kit.json"
+            social_kit_path.write_text(json.dumps(social_kit, indent=2), encoding="utf-8")
+            artifacts.append(
+                self._make_artifact(
+                    kind="social_kit",
+                    path=social_kit_path,
+                    mime_type="application/json",
+                    metadata=social_kit,
+                )
+            )
+
         manifest = {
             "job_id": job_id,
             "output_profile": output_profile.value,
@@ -492,8 +580,13 @@ class VideoPipeline:
         await self.runner.run_ffmpeg(args)
         return output_path
 
-    async def _concat_sources(self, sources: list[SourceAsset], output_path: Path) -> bool:
-        """Normalize and concatenate multiple clips using the FFmpeg concat filter."""
+    async def _concat_sources(
+        self,
+        sources: list[SourceAsset],
+        output_path: Path,
+        transition_sec: float = 0.0,
+    ) -> bool:
+        """Normalize and concatenate multiple clips, optionally with crossfades."""
         any_audio = any(bool(s.probe.get("has_audio", False)) for s in sources)
         inputs: list[str] = []
         filter_parts: list[str] = []
@@ -503,12 +596,18 @@ class VideoPipeline:
         first_v = sources[0].probe.get("video") or {}
         target_w = int(first_v.get("width") or 1920)
         target_h = int(first_v.get("height") or 1080)
+        durations = [float(s.probe.get("duration_sec") or 0.0) for s in sources]
+        use_xfade = (
+            transition_sec > 0.0
+            and len(sources) > 1
+            and all(d >= transition_sec * 1.5 for d in durations)
+        )
 
         for idx, src in enumerate(sources):
             inputs.extend(["-i", src.local_path])
             filter_parts.append(
                 f"[{idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{idx}]"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=AVTB[v{idx}]"
             )
             if any_audio:
                 if src.probe.get("has_audio"):
@@ -516,7 +615,7 @@ class VideoPipeline:
                         f"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{idx}]"
                     )
                 else:
-                    dur = float(src.probe.get("duration_sec") or 1.0)
+                    dur = durations[idx] or 1.0
                     filter_parts.append(
                         f"anullsrc=channel_layout=stereo:sample_rate=48000:d={dur:.3f}[a{idx}]"
                     )
@@ -524,11 +623,29 @@ class VideoPipeline:
             else:
                 concat_inputs.append(f"[v{idx}]")
 
-        a_flag = 1 if any_audio else 0
-        out_streams = "[vcat][acat]" if any_audio else "[vcat]"
-        filter_parts.append(
-            f"{''.join(concat_inputs)}concat=n={len(sources)}:v=1:a={a_flag}{out_streams}"
-        )
+        if use_xfade:
+            cur_v = "v0"
+            cur_a = "a0"
+            offset = durations[0] - transition_sec
+            for idx in range(1, len(sources)):
+                next_v = "vcat" if idx == len(sources) - 1 else f"vx{idx}"
+                filter_parts.append(
+                    f"[{cur_v}][v{idx}]xfade=transition=fade:duration={transition_sec:.3f}:offset={max(0.0, offset):.3f}[{next_v}]"
+                )
+                cur_v = next_v
+                if any_audio:
+                    next_a = "acat" if idx == len(sources) - 1 else f"ax{idx}"
+                    filter_parts.append(
+                        f"[{cur_a}][a{idx}]acrossfade=d={transition_sec:.3f}:c1=tri:c2=tri[{next_a}]"
+                    )
+                    cur_a = next_a
+                offset += durations[idx] - transition_sec
+        else:
+            a_flag = 1 if any_audio else 0
+            out_streams = "[vcat][acat]" if any_audio else "[vcat]"
+            filter_parts.append(
+                f"{''.join(concat_inputs)}concat=n={len(sources)}:v=1:a={a_flag}{out_streams}"
+            )
 
         args = [
             *inputs,
@@ -622,6 +739,17 @@ class VideoPipeline:
                 v_filters.append(
                     f"subtitles=filename='{_escape_filter_path(sub_path)}':force_style='{style}'"
                 )
+            elif isinstance(op, ColorPresetOp):
+                preset_filters = {
+                    "original": None,
+                    "cinematic": "eq=contrast=1.12:saturation=0.88:brightness=-0.02,colorbalance=rs=-0.02:gs=0.0:bs=0.04",
+                    "vivid": "eq=contrast=1.10:saturation=1.28:brightness=0.02",
+                    "warm": "eq=saturation=1.10,colorbalance=rs=0.06:gs=0.02:bs=-0.06",
+                    "bw": "hue=s=0,eq=contrast=1.15",
+                }
+                flt = preset_filters.get(op.preset)
+                if flt:
+                    v_filters.append(flt)
             elif isinstance(op, WatermarkOp):
                 if op.image_source_id not in watermark_sources:
                     raise ValueError(f"Watermark source not found: {op.image_source_id}")
@@ -647,7 +775,10 @@ class VideoPipeline:
                     "bottom-left": f"{wm.margin_px}:H-h-{wm.margin_px}",
                     "bottom-right": f"W-w-{wm.margin_px}:H-h-{wm.margin_px}",
                 }[wm.position]
-                fc_parts.append(f"[{idx}:v]scale={wm.scale_width}:-1[wm{idx}]")
+                fc_parts.append(
+                    f"[{idx}:v]scale={wm.scale_width}:-1,format=rgba,"
+                    f"colorchannelmixer=aa={wm.opacity:.2f}[wm{idx}]"
+                )
                 next_v = f"vout{idx}"
                 fc_parts.append(f"[{cur_v}][wm{idx}]overlay={pos_expr}[{next_v}]")
                 cur_v = next_v
@@ -680,6 +811,80 @@ class VideoPipeline:
         )
         await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
 
+    async def _mix_background_music(
+        self,
+        input_path: Path,
+        bgm_path: Path,
+        output_path: Path,
+        has_audio: bool,
+        music_volume: float = 0.22,
+        ducking: bool = True,
+    ) -> None:
+        """Loop and mix background music into `input_path`, optionally ducking under speech."""
+        if has_audio:
+            if ducking:
+                fc = (
+                    f"[1:a]volume={music_volume:.3f}[bgm];"
+                    "[0:a]asplit=2[voice][sc];"
+                    "[bgm][sc]sidechaincompress=threshold=0.03:ratio=8:attack=15:release=250[ducked];"
+                    "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                )
+            else:
+                fc = (
+                    f"[1:a]volume={music_volume:.3f}[bgm];"
+                    "[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                )
+            args = [
+                "-i",
+                str(input_path),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_path),
+                "-filter_complex",
+                fc,
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        else:
+            args = [
+                "-i",
+                str(input_path),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(bgm_path),
+                "-filter_complex",
+                f"[1:a]volume={music_volume:.3f}[aout]",
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        await self.runner.run_ffmpeg(args)
+
     async def _burn_subtitles_only(
         self,
         input_path: Path,
@@ -688,11 +893,20 @@ class VideoPipeline:
         has_audio: bool,
         font_size: int = 20,
         margin_v: int = 55,
+        font_color: str = "white",
+        highlight_bg: bool = True,
+        position: str = "bottom",
         progress_cb: Callable[[float], None] | None = None,
         duration_sec: float | None = None,
     ) -> None:
         if self.runner.has_filter("subtitles"):
-            style = _subtitle_force_style(font_size=font_size, margin_v=margin_v)
+            style = _subtitle_force_style(
+                font_size=font_size,
+                margin_v=margin_v,
+                font_color=font_color,
+                highlight_bg=highlight_bg,
+                position=position,
+            )
             vf = f"subtitles=filename='{_escape_filter_path(srt_path)}':force_style='{style}'"
             args = [
                 "-i",

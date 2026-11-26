@@ -19,12 +19,15 @@ dependencies = [
 [project.optional-dependencies]
 s3 = ["boto3>=1.34.0"]
 youtube = ["yt-dlp>=2024.12.0"]
-captions = ["faster-whisper>=1.1.0"]
+captions = ["faster-whisper>=1.1.0", "Pillow>=10.0.0"]
+vision = ["opencv-python-headless>=4.9.0"]
 voice = ["omnivoice>=0.1.0", "coqui-tts>=0.24.0"]
 full = [
     "boto3>=1.34.0",
     "yt-dlp>=2024.12.0",
     "faster-whisper>=1.1.0",
+    "Pillow>=10.0.0",
+    "opencv-python-headless>=4.9.0",
     "omnivoice>=0.1.0",
     "coqui-tts>=0.24.0",
 ]

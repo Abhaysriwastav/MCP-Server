@@ -122,6 +122,7 @@ class WatermarkOp(BaseModel):
     position: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-right"
     margin_px: int = Field(default=24, ge=0, le=200)
     scale_width: int = Field(default=160, ge=16, le=1000)
+    opacity: float = Field(default=0.85, ge=0.1, le=1.0)
 
 
 class BurnSubtitlesOp(BaseModel):
@@ -135,6 +136,9 @@ class AutoCaptionOp(BaseModel):
     max_chars_per_cue: int = Field(default=38, ge=10, le=120)
     font_size: int = Field(default=20, ge=10, le=72)
     margin_v: int = Field(default=55, ge=0, le=240)
+    font_color: str = Field(default="white")
+    highlight_bg: bool = Field(default=True)
+    position: Literal["bottom", "center", "top"] = "bottom"
 
 
 class VoiceCloneOp(BaseModel):
@@ -159,6 +163,23 @@ class SmartCropOp(BaseModel):
     enabled: bool = True
 
 
+class BackgroundMusicOp(BaseModel):
+    op: Literal["background_music"] = "background_music"
+    audio_source_id: str
+    music_volume: float = Field(default=0.22, ge=0.02, le=1.0)
+    ducking: bool = True
+
+
+class ColorPresetOp(BaseModel):
+    op: Literal["color_preset"] = "color_preset"
+    preset: Literal["original", "cinematic", "vivid", "warm", "bw"] = "original"
+
+
+class CrossfadeMergeOp(BaseModel):
+    op: Literal["crossfade_merge"] = "crossfade_merge"
+    transition_sec: float = Field(default=0.5, ge=0.0, le=2.5)
+
+
 EditOperation = Annotated[
     Union[
         TrimOp,
@@ -174,6 +195,9 @@ EditOperation = Annotated[
         VoiceCloneOp,
         RemoveSilencesOp,
         SmartCropOp,
+        BackgroundMusicOp,
+        ColorPresetOp,
+        CrossfadeMergeOp,
     ],
     Field(discriminator="op"),
 ]
@@ -201,6 +225,7 @@ class RenderedArtifact(BaseModel):
         "subtitles_srt",
         "transcript",
         "voice_dub",
+        "social_kit",
     ]
     path: str
     sha256: str

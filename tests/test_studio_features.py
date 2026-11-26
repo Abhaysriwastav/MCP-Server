@@ -14,7 +14,8 @@ from video_mcp.config import Settings
 from video_mcp.context import AppContext
 from video_mcp.dashboard.ui import DASHBOARD_HTML
 from video_mcp.media.face_tracker import estimate_face_center_x_sync
-from video_mcp.media.pipeline import _reframe_filter
+from video_mcp.media.pipeline import _reframe_filter, _subtitle_force_style
+from video_mcp.media.social_kit import generate_social_kit
 from video_mcp.media.translator import translate_segments
 from video_mcp.models import TranscriptSegment
 from video_mcp.tools import editing, ingest
@@ -99,6 +100,103 @@ class TestStudioFeatures(unittest.TestCase):
                     out_dur = float(v_art["metadata"]["probe"]["duration_sec"])
                     # Original was 2.6s with 1.0s silence; trimmed output should be noticeably shorter
                     self.assertLess(out_dur, 2.2)
+                finally:
+                    app.close()
+
+        asyncio.run(_run())
+
+    def test_social_kit_generates_chapters_titles_and_hashtags(self) -> None:
+        segs = [
+            TranscriptSegment(start=0.0, end=5.0, text="Welcome to the studio workflow"),
+            TranscriptSegment(start=32.0, end=38.0, text="Smart face tracking keeps subjects centered"),
+        ]
+        kit = generate_social_kit(segs, "AI Video Studio")
+        self.assertEqual(len(kit["chapters"]), 2)
+        self.assertEqual(kit["chapters"][0]["time"], "00:00")
+        self.assertEqual(kit["chapters"][1]["time"], "00:32")
+        self.assertEqual(len(kit["viral_titles"]), 3)
+        self.assertIn("#shorts", kit["hashtags"])
+        self.assertIn("Chapters:", kit["youtube_description"])
+
+    def test_subtitle_force_style_supports_color_position_and_bg(self) -> None:
+        style = _subtitle_force_style(
+            font_size=26, font_color="yellow", highlight_bg=False, position="top"
+        )
+        self.assertIn("FontSize=26", style)
+        self.assertIn("PrimaryColour=&H0000FFFF", style)
+        self.assertIn("Alignment=8", style)
+        self.assertIn("BorderStyle=1", style)
+
+    def test_dashboard_contains_all_new_studio_controls(self) -> None:
+        for token in (
+            "builder-916-guide",
+            "builder-caption-preview",
+            "builder-bgm-source",
+            "builder-wm-source",
+            "builder-color",
+            "builder-montage-list",
+            "upload-color",
+        ):
+            self.assertIn(token, DASHBOARD_HTML)
+
+    @unittest.skipUnless(HAS_FFMPEG, "ffmpeg/ffprobe required")
+    def test_color_preset_bgm_and_crossfade_end_to_end(self) -> None:
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                clip1 = tmp_path / "clip1.mp4"
+                clip2 = tmp_path / "clip2.mp4"
+                bgm = tmp_path / "bgm.wav"
+                for clip, freq in ((clip1, 440), (clip2, 554)):
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y",
+                            "-f", "lavfi", "-i", "testsrc=duration=1.5:size=320x240:rate=24",
+                            "-f", "lavfi", "-i", f"sine=frequency={freq}:duration=1.5",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                            str(clip),
+                        ],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=220:duration=2.0",
+                        str(bgm),
+                    ],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                cfg = Settings(
+                    workspace_dir=tmp_path / "ws",
+                    db_path=tmp_path / "ws" / "video.db",
+                    release_dir=tmp_path / "rel",
+                    allowed_local_roots=[tmp_path],
+                )
+                app = AppContext.create(cfg)
+                try:
+                    s1 = (await ingest.ingest_source(app, str(clip1)))["source"]["source_id"]
+                    s2 = (await ingest.ingest_source(app, str(clip2)))["source"]["source_id"]
+                    s_bgm = (await ingest.ingest_source(app, str(bgm)))["source"]["source_id"]
+
+                    created = editing.create_edit_job(
+                        app,
+                        title="Montage + Color + BGM",
+                        source_ids=[s1, s2],
+                        operations=[
+                            {"op": "crossfade_merge", "transition_sec": 0.4},
+                            {"op": "color_preset", "preset": "cinematic"},
+                            {"op": "background_music", "audio_source_id": s_bgm, "music_volume": 0.2, "ducking": True},
+                        ],
+                        output_profile="landscape_16x9",
+                    )
+                    rendered = await editing.render_edit_job(app, created["job"]["job_id"])
+                    kinds = {a["kind"] for a in rendered["job"]["artifacts"]}
+                    self.assertIn("video_16x9", kinds)
+                    self.assertIn("social_kit", kinds)
                 finally:
                     app.close()
 

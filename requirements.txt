@@ -4,10 +4,11 @@ pydantic>=2.7.0
 pydantic-settings>=2.2.0
 httpx>=0.27.0
 
-# YouTube ingestion & Whisper auto-captioning
+# YouTube ingestion, Whisper auto-captioning & Smart Face-Track 9:16
 yt-dlp>=2024.12.0
 faster-whisper>=1.1.0
 Pillow>=10.0.0
+opencv-python-headless>=4.9.0
 
 # AI Voice Cloning (OmniVoice / Coqui XTTS-v2)
 omnivoice>=0.1.0
