@@ -86,15 +86,10 @@ video-automation-dashboard
 - **Clip Viral Dialogue**: Search spoken dialogue by keyword/phrase (or auto-rank top moments) and one-click **Clip & Render** into synced `16:9` + `9:16` outputs.
 - **Job Inspector & Approval Gate**: Stream rendered MP4s inline, add auto-captions to existing jobs, and **Approve / Reject / Publish**.
 
-### Docker Compose
+### Docker Compose (with NVIDIA CUDA GPU + all `requirements.txt` packages)
 
 ```bash
-# CPU / macOS
 docker compose up --build -d
-
-# Windows (WSL2) / Linux with NVIDIA CUDA GPU (Whisper + OmniVoice + NVENC)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build -d
-
 # Dashboard: http://localhost:8080 | MCP HTTP: http://localhost:8000/mcp
 ```
 

@@ -12,6 +12,19 @@ services:
       VIDEO_MCP_ALLOWED_LOCAL_ROOTS: /app/workspace
       VIDEO_MCP_DASHBOARD_HOST: 0.0.0.0
       VIDEO_MCP_DASHBOARD_PORT: "8080"
+      VIDEO_MCP_WHISPER_DEVICE: auto
+      VIDEO_MCP_WHISPER_COMPUTE_TYPE: auto
+      VIDEO_MCP_OMNIVOICE_DEVICE: auto
+      VIDEO_MCP_FFMPEG_HWACCEL: auto
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
     volumes:
       - ./workspace:/app/workspace
     restart: unless-stopped
@@ -30,6 +43,19 @@ services:
       VIDEO_MCP_TRANSPORT: streamable-http
       VIDEO_MCP_HOST: 0.0.0.0
       VIDEO_MCP_PORT: "8000"
+      VIDEO_MCP_WHISPER_DEVICE: auto
+      VIDEO_MCP_WHISPER_COMPUTE_TYPE: auto
+      VIDEO_MCP_OMNIVOICE_DEVICE: auto
+      VIDEO_MCP_FFMPEG_HWACCEL: auto
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
     volumes:
       - ./workspace:/app/workspace
     restart: unless-stopped
