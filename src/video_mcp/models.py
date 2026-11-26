@@ -143,7 +143,20 @@ class VoiceCloneOp(BaseModel):
     voice_id: str | None = None
     script_text: str | None = None
     language: str = Field(default="en", min_length=2, max_length=10)
+    target_language: str | None = Field(default=None, min_length=2, max_length=10)
     keep_background_audio: bool = False
+
+
+class RemoveSilencesOp(BaseModel):
+    op: Literal["remove_silences"] = "remove_silences"
+    noise_db: float = Field(default=-32.0, ge=-60.0, le=-10.0)
+    min_silence_sec: float = Field(default=0.6, ge=0.2, le=5.0)
+    padding_sec: float = Field(default=0.1, ge=0.0, le=0.5)
+
+
+class SmartCropOp(BaseModel):
+    op: Literal["smart_crop"] = "smart_crop"
+    enabled: bool = True
 
 
 EditOperation = Annotated[
@@ -159,6 +172,8 @@ EditOperation = Annotated[
         BurnSubtitlesOp,
         AutoCaptionOp,
         VoiceCloneOp,
+        RemoveSilencesOp,
+        SmartCropOp,
     ],
     Field(discriminator="op"),
 ]

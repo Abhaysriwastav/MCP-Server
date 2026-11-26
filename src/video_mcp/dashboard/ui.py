@@ -590,6 +590,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <div class="card" style="margin-bottom: 18px;">
+        <div class="card-head">
+          <span>Visual Edit Builder (Custom Trim, Speed, Silence Removal, Face-Track &amp; Dubbing)</span>
+          <span class="mono">No MCP client needed</span>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+            <select id="builder-source" style="min-width:220px;max-width:280px;"></select>
+            <input type="text" id="builder-title" placeholder="Edit title (optional)" style="max-width:200px;" />
+            <input type="number" id="builder-start" placeholder="Start (s)" min="0" step="0.5" style="width:100px;" />
+            <input type="number" id="builder-end" placeholder="End (s)" min="0.5" step="0.5" style="width:100px;" />
+            <input type="number" id="builder-speed" value="1.0" min="0.25" max="4.0" step="0.25" style="width:95px;" title="Speed factor" />
+            <select id="builder-profile">
+              <option value="both">Both (16:9 + 9:16)</option>
+              <option value="landscape_16x9">16:9 Only</option>
+              <option value="vertical_9x16">9:16 Only</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+            <input type="text" id="builder-hook" placeholder="Hook Text Overlay (optional)" style="flex:1;min-width:220px;" />
+            <select id="builder-hook-pos">
+              <option value="top">Top</option>
+              <option value="center">Center</option>
+              <option value="bottom" selected>Bottom</option>
+            </select>
+            <select id="builder-dub-lang" title="Target AI Dub Language">
+              <option value="">Dub Language: Original</option>
+              <option value="en">Dub: English (en)</option>
+              <option value="hi">Dub: Hindi (hi)</option>
+              <option value="es">Dub: Spanish (es)</option>
+              <option value="fr">Dub: French (fr)</option>
+              <option value="de">Dub: German (de)</option>
+              <option value="ja">Dub: Japanese (ja)</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-norm" checked /><span>Audio Normalize (-14 LUFS)</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-nosilence" /><span>Remove Silences</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-facecrop" checked /><span>Smart Face-Track 9:16</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-caption" /><span>Auto-Caption</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-voice" /><span>AI Voice Clone</span></label>
+            <button class="btn" onclick="submitCustomEdit()">Render Custom Edit</button>
+          </div>
+        </div>
+      </div>
+
       <div class="grid-2">
         <div class="card">
           <div class="card-head" style="flex-wrap:wrap;gap:8px;">
@@ -863,18 +909,80 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function renderSourceSelect(sources) {
-      const sel = document.getElementById("dialogue-source");
-      if (!sel) return;
-      const prev = sel.value;
-      if (!sources.length) {
-        sel.innerHTML = `<option value="">No sources ingested yet</option>`;
+      for (const id of ["dialogue-source", "builder-source"]) {
+        const sel = document.getElementById(id);
+        if (!sel) continue;
+        const prev = sel.value;
+        if (!sources.length) {
+          sel.innerHTML = `<option value="">No sources ingested yet</option>`;
+          continue;
+        }
+        sel.innerHTML = sources.map(s => {
+          const label = (s.probe && s.probe.youtube && s.probe.youtube.title) || s.filename;
+          return `<option value="${s.source_id}">${label} (${s.source_id})</option>`;
+        }).join("");
+        if (prev && sources.some(s => s.source_id === prev)) sel.value = prev;
+      }
+    }
+
+    async function submitCustomEdit() {
+      const sourceId = document.getElementById("builder-source").value;
+      if (!sourceId) {
+        showToast("Please upload or ingest a video first.");
         return;
       }
-      sel.innerHTML = sources.map(s => {
-        const label = (s.probe && s.probe.youtube && s.probe.youtube.title) || s.filename;
-        return `<option value="${s.source_id}">${label} (${s.source_id})</option>`;
-      }).join("");
-      if (prev && sources.some(s => s.source_id === prev)) sel.value = prev;
+      const ops = [];
+      const st = document.getElementById("builder-start").value;
+      const en = document.getElementById("builder-end").value;
+      if (st !== "" || en !== "") {
+        const trimOp = { op: "trim", start_sec: st !== "" ? Number(st) : 0 };
+        if (en !== "") trimOp.end_sec = Number(en);
+        ops.push(trimOp);
+      }
+      const spd = Number(document.getElementById("builder-speed").value || 1.0);
+      if (Math.abs(spd - 1.0) > 0.01) ops.push({ op: "speed", factor: spd });
+      if (document.getElementById("builder-nosilence").checked) ops.push({ op: "remove_silences" });
+      if (document.getElementById("builder-norm").checked) ops.push({ op: "audio_normalize", target_i: -14.0 });
+      const hookText = document.getElementById("builder-hook").value.trim();
+      if (hookText) {
+        ops.push({
+          op: "text_overlay",
+          text: hookText,
+          position: document.getElementById("builder-hook-pos").value,
+        });
+      }
+      if (document.getElementById("builder-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
+      const dubLang = document.getElementById("builder-dub-lang").value;
+      const scriptText = document.getElementById("voice-script-input").value.trim() || null;
+      if (document.getElementById("builder-voice").checked) {
+        ops.push({
+          op: "voice_clone",
+          script_text: scriptText,
+          target_language: dubLang || null,
+        });
+      }
+      if (document.getElementById("builder-caption").checked) ops.push({ op: "auto_caption" });
+
+      const title = document.getElementById("builder-title").value.trim() || "Custom Studio Edit";
+      const profile = document.getElementById("builder-profile").value;
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          source_ids: [sourceId],
+          output_profile: profile,
+          operations: ops,
+          auto_render: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.job) {
+        showToast(`Started custom render ${data.job.job_id}`);
+        await refreshAll();
+      } else {
+        showToast(`Render error: ${data.error || res.status}`);
+      }
     }
 
     async function findDialogueMoments() {
@@ -1099,6 +1207,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       if (srtArt) {
         actions.push(`<a class="btn btn-sec" style="text-decoration:none;" href="/api/files?path=${encodeURIComponent(srtArt.path)}" download="captions.srt">Download .SRT</a>`);
+      }
+      if ((job.artifacts || []).length > 0) {
+        actions.push(`<a class="btn btn-sec" style="text-decoration:none;" href="/api/jobs/${job.job_id}/bundle.zip" download="${job.job_id}_bundle.zip">Download Bundle (.ZIP)</a>`);
       }
       if (job.status === "ready_for_review" || job.status === "rejected") {
         actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','request_approval')">Request Approval</button>`);

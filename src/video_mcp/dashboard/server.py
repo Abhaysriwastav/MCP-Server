@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import uuid
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -146,6 +147,34 @@ def create_dashboard_server(
                         },
                     },
                 )
+                return
+
+            if path.startswith("/api/jobs/") and path.endswith("/bundle.zip"):
+                job_id = path.removeprefix("/api/jobs/").removesuffix("/bundle.zip").strip("/")
+                job = app.store.get_job(job_id)
+                if job is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Job not found: {job_id}"})
+                    return
+                if not job.artifacts:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Job has no artifacts yet."})
+                    return
+                buf_path = app.settings.workspace_dir / "renders" / f"{job_id}_bundle.zip"
+                buf_path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(buf_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for art in job.artifacts:
+                        p = Path(art.path)
+                        if p.is_file():
+                            zf.write(p, arcname=p.name)
+                    cert = app.settings.release_dir / job_id / "approval_certificate.json"
+                    if cert.is_file():
+                        zf.write(cert, arcname="approval_certificate.json")
+                data = buf_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{job_id}_bundle.zip"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
                 return
 
             if path.startswith("/api/jobs/"):
@@ -387,6 +416,34 @@ def create_dashboard_server(
                     self._send_json(HTTPStatus.OK, updated)
                 except Exception as exc:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            if path.startswith("/api/jobs/") and path.endswith("/bundle.zip"):
+                job_id = path.removeprefix("/api/jobs/").removesuffix("/bundle.zip").strip("/")
+                job = app.store.get_job(job_id)
+                if job is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Job not found: {job_id}"})
+                    return
+                if not job.artifacts:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Job has no artifacts yet."})
+                    return
+                buf_path = app.settings.workspace_dir / "renders" / f"{job_id}_bundle.zip"
+                buf_path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(buf_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for art in job.artifacts:
+                        p = Path(art.path)
+                        if p.is_file():
+                            zf.write(p, arcname=p.name)
+                    cert = app.settings.release_dir / job_id / "approval_certificate.json"
+                    if cert.is_file():
+                        zf.write(cert, arcname="approval_certificate.json")
+                data = buf_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{job_id}_bundle.zip"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
                 return
 
             if path.startswith("/api/jobs/"):

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
+import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from video_mcp.media.face_tracker import estimate_face_center_x
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
 from video_mcp.media.job_control import JobControlHandle
 from video_mcp.media.transcriber import Transcriber, generate_srt
+from video_mcp.media.translator import translate_segments, translate_text
 from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.models import (
     AudioNormalizeOp,
@@ -22,8 +26,10 @@ from video_mcp.models import (
     FadeOp,
     OutputProfile,
     ReframeOp,
+    RemoveSilencesOp,
     RenderedArtifact,
     ScaleOp,
+    SmartCropOp,
     SourceAsset,
     SpeedOp,
     TextOverlayOp,
@@ -111,15 +117,19 @@ def _atempo_chain(factor: float) -> list[str]:
     return filters
 
 
-def _reframe_filter(width: int, height: int, mode: str = "crop") -> str:
+def _reframe_filter(
+    width: int, height: int, mode: str = "crop", focus_x: float = 0.5
+) -> str:
     if mode == "pad":
         return (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
         )
+    clamped_x = min(1.0, max(0.0, focus_x))
+    x_expr = f"max(0,min(iw-{width},iw*{clamped_x:.4f}-{width / 2:.1f}))"
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},setsar=1"
+        f"crop={width}:{height}:'{x_expr}':(ih-{height})/2,setsar=1"
     )
 
 
@@ -190,15 +200,21 @@ class VideoPipeline:
         # splitting into 16:9 and 9:16.
         caption_ops = [op for op in operations if isinstance(op, AutoCaptionOp)]
         voice_ops = [op for op in operations if isinstance(op, VoiceCloneOp)]
+        silence_ops = [op for op in operations if isinstance(op, RemoveSilencesOp)]
+        smart_crop_ops = [op for op in operations if isinstance(op, SmartCropOp)]
         pre_caption_ops = [
-            op for op in operations if not isinstance(op, (AutoCaptionOp, VoiceCloneOp))
+            op
+            for op in operations
+            if not isinstance(op, (AutoCaptionOp, VoiceCloneOp, RemoveSilencesOp, SmartCropOp))
         ]
         artifacts: list[RenderedArtifact] = []
 
         if pre_caption_ops:
             await _checkpoint()
             pre_caption_path = job_dir / (
-                "pre_caption.mp4" if (caption_ops or voice_ops) else "master_edited.mp4"
+                "pre_caption.mp4"
+                if (caption_ops or voice_ops or silence_ops)
+                else "master_edited.mp4"
             )
             _report(5.0, "Applying edits")
             await self._apply_operations(
@@ -212,6 +228,23 @@ class VideoPipeline:
             )
         else:
             pre_caption_path = base_input
+
+        if silence_ops and has_audio:
+            await _checkpoint()
+            _report(15.0, "Removing silent gaps")
+            s_op = silence_ops[-1]
+            sil_out = job_dir / (
+                "pre_caption_nosilence.mp4" if (caption_ops or voice_ops) else "master_edited.mp4"
+            )
+            pre_caption_path = await self._remove_silences(
+                input_path=pre_caption_path,
+                output_path=sil_out,
+                noise_db=s_op.noise_db,
+                min_silence_sec=s_op.min_silence_sec,
+                padding_sec=s_op.padding_sec,
+                has_audio=has_audio,
+                control=control,
+            )
 
         cached_segments: list[TranscriptSegment] | None = None
         if caption_ops or (voice_ops and not voice_ops[-1].script_text):
@@ -249,13 +282,24 @@ class VideoPipeline:
                 )
 
             _report(30.0, "Cloning AI voice")
+            dub_lang = (v_op.target_language or v_op.language).strip()
+            if v_op.target_language and v_op.target_language.lower() != v_op.language.lower():
+                _report(34.0, f"Translating to {dub_lang}")
+                script_text = await translate_text(
+                    script_text, target_language=dub_lang, source_language=v_op.language
+                )
+                if cached_segments:
+                    cached_segments = await translate_segments(
+                        cached_segments, target_language=dub_lang, source_language=v_op.language
+                    )
+
             dub_wav = job_dir / "ai_voice_dub.wav"
             await self.voice_cloner.synthesize(
                 text=script_text,
                 output_path=dub_wav,
                 reference_audio_path=ref_audio_path,
                 voice_id=v_op.voice_id,
-                language=v_op.language,
+                language=dub_lang,
             )
             artifacts.append(
                 self._make_artifact(
@@ -346,6 +390,12 @@ class VideoPipeline:
         export_end = 97.0
         step_span = (export_end - export_start) / max(1, len(targets))
 
+        use_smart_crop = any(op.enabled for op in smart_crop_ops)
+        face_x = 0.5
+        if use_smart_crop and any(k == "video_9x16" for k, *_ in targets):
+            _report(74.0, "Tracking speaker face for 9:16")
+            face_x = await estimate_face_center_x(master_path)
+
         for idx, (kind, filename, w, h) in enumerate(targets):
             await _checkpoint()
             stage_label = f"Exporting {w}x{h}"
@@ -353,12 +403,14 @@ class VideoPipeline:
             e_pct = s_pct + step_span
             _report(s_pct, stage_label)
             out_path = job_dir / filename
+            focus_x = face_x if kind == "video_9x16" else 0.5
             await self._export_rendition(
                 master_path,
                 out_path,
                 w,
                 h,
                 master_probe["has_audio"],
+                focus_x=focus_x,
                 progress_cb=_sub_progress(s_pct, e_pct, stage_label),
                 duration_sec=master_dur or None,
             )
@@ -840,6 +892,100 @@ class VideoPipeline:
             ]
         await self.runner.run_ffmpeg(args)
 
+    async def _remove_silences(
+        self,
+        input_path: Path,
+        output_path: Path,
+        noise_db: float,
+        min_silence_sec: float,
+        padding_sec: float,
+        has_audio: bool,
+        control: JobControlHandle | None = None,
+    ) -> Path:
+        """Detect silent gaps via FFmpeg silencedetect and concatenate non-silent segments."""
+        probe = await self.runner.probe(input_path)
+        total_dur = float(probe.get("duration_sec") or 0.0)
+        if total_dur <= 0 or not has_audio:
+            shutil.copy2(input_path, output_path)
+            return output_path
+
+        def _detect() -> str:
+            proc = subprocess.run(
+                [
+                    self.runner.ffmpeg_bin,
+                    "-i",
+                    str(input_path),
+                    "-af",
+                    f"silencedetect=noise={noise_db}dB:d={min_silence_sec}",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=min(self.runner.timeout_sec, 180),
+                check=False,
+            )
+            return proc.stderr or ""
+
+        stderr_out = await asyncio.to_thread(_detect)
+        starts = [float(m) for m in re.findall(r"silence_start:\s*([0-9.]+)", stderr_out)]
+        ends = [float(m) for m in re.findall(r"silence_end:\s*([0-9.]+)", stderr_out)]
+        if not starts:
+            shutil.copy2(input_path, output_path)
+            return output_path
+
+        # Build active (non-silent) intervals
+        silences: list[tuple[float, float]] = []
+        for idx, st in enumerate(starts):
+            en = ends[idx] if idx < len(ends) else total_dur
+            silences.append((st, en))
+
+        keep: list[tuple[float, float]] = []
+        cursor = 0.0
+        for s_start, s_end in silences:
+            seg_end = min(total_dur, s_start + padding_sec)
+            if seg_end - cursor >= 0.15:
+                keep.append((max(0.0, cursor - padding_sec), seg_end))
+            cursor = s_end
+        if total_dur - cursor >= 0.15:
+            keep.append((max(0.0, cursor - padding_sec), total_dur))
+
+        if not keep or (len(keep) == 1 and keep[0][0] <= 0.05 and keep[0][1] >= total_dur - 0.05):
+            shutil.copy2(input_path, output_path)
+            return output_path
+
+        fc_parts: list[str] = []
+        cat_inputs: list[str] = []
+        for i, (st, en) in enumerate(keep):
+            fc_parts.append(f"[0:v]trim=start={st:.3f}:end={en:.3f},setpts=PTS-STARTPTS[v{i}]")
+            fc_parts.append(f"[0:a]atrim=start={st:.3f}:end={en:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            cat_inputs.append(f"[v{i}][a{i}]")
+        fc_parts.append(f"{''.join(cat_inputs)}concat=n={len(keep)}:v=1:a=1[vout][aout]")
+
+        args = [
+            "-i",
+            str(input_path),
+            "-filter_complex",
+            ";".join(fc_parts),
+            "-map",
+            "[vout]",
+            "-map",
+            "[aout]",
+            *self.runner.video_encoder_args(preset="medium", crf=18),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        await self.runner.run_ffmpeg(args, control=control)
+        return output_path
+
     async def _export_rendition(
         self,
         master_path: Path,
@@ -847,10 +993,11 @@ class VideoPipeline:
         width: int,
         height: int,
         has_audio: bool,
+        focus_x: float = 0.5,
         progress_cb: Callable[[float], None] | None = None,
         duration_sec: float | None = None,
     ) -> None:
-        vf = _reframe_filter(width, height, mode="crop")
+        vf = _reframe_filter(width, height, mode="crop", focus_x=focus_x)
         args = [
             "-i",
             str(master_path),
