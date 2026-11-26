@@ -77,6 +77,8 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             watermark_sources[op.image_source_id] = wm_src
 
     job.status = JobStatus.RENDERING
+    job.approval_id = None
+    job.artifacts = []
     job.error = None
     app.store.save_job(job)
     app.store.log_activity(
@@ -115,6 +117,41 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             job_id=job.job_id,
         )
         raise
+
+
+def update_edit_job(
+    app: AppContext,
+    job_id: str,
+    title: str | None = None,
+    operations: list[dict[str, Any]] | None = None,
+    output_profile: str | None = None,
+) -> dict[str, Any]:
+    """Update a job's plan and reset status to DRAFT, clearing stale approvals/artifacts."""
+    job = app.store.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Job not found: {job_id}")
+    if job.status in {JobStatus.RENDERING, JobStatus.PUBLISHED}:
+        raise ValueError(f"Cannot modify job '{job_id}' while status is '{job.status.value}'.")
+
+    if title is not None:
+        job.title = title
+    if operations is not None:
+        parsed_ops = _OP_ADAPTER.validate_python(operations)
+        job.operations = [op.model_dump() for op in parsed_ops]
+    if output_profile is not None:
+        job.output_profile = OutputProfile(output_profile)
+
+    job.status = JobStatus.DRAFT
+    job.approval_id = None
+    job.artifacts = []
+    job.error = None
+    app.store.save_job(job)
+    app.store.log_activity(
+        category="job",
+        message=f"Updated edit job '{job.title}' and reset to draft",
+        job_id=job.job_id,
+    )
+    return {"job": job.model_dump()}
 
 
 def get_job_status(app: AppContext, job_id: str) -> dict[str, Any]:

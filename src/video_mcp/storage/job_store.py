@@ -16,6 +16,7 @@ from video_mcp.models import (
     RenderedArtifact,
     SourceAsset,
     SourceKind,
+    TranscriptSegment,
     utc_now_iso,
 )
 
@@ -84,6 +85,13 @@ class JobStore:
                     job_id TEXT,
                     details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    source_id TEXT PRIMARY KEY,
+                    segments_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE
                 );
                 """
             )
@@ -375,4 +383,51 @@ class JobStore:
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Transcript Cache & Stale Job Recovery
+    # ------------------------------------------------------------------
+
+    def save_transcript(self, source_id: str, segments: list[TranscriptSegment]) -> None:
+        now = utc_now_iso()
+        payload = json.dumps([s.model_dump() for s in segments])
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO transcripts (source_id, segments_json, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    segments_json=excluded.segments_json,
+                    created_at=excluded.created_at
+                """,
+                (source_id, payload, now),
+            )
+
+    def get_transcript(self, source_id: str) -> list[TranscriptSegment] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT segments_json FROM transcripts WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return [TranscriptSegment(**item) for item in json.loads(row["segments_json"])]
+
+    def recover_stale_rendering_jobs(self) -> list[str]:
+        """Mark any jobs left in `rendering` from a prior crash as `failed`."""
+        stale = self.list_jobs(status=JobStatus.RENDERING, limit=200)
+        recovered_ids: list[str] = []
+        for job in stale:
+            job.status = JobStatus.FAILED
+            job.error = "Interrupted by server restart while rendering"
+            job.approval_id = None
+            self.save_job(job)
+            self.log_activity(
+                category="render",
+                level="error",
+                message=f"Recovered stale rendering job '{job.title}' as failed after restart",
+                job_id=job.job_id,
+            )
+            recovered_ids.append(job.job_id)
+        return recovered_ids
 

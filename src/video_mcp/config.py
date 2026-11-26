@@ -42,8 +42,16 @@ class Settings(BaseModel):
     ffmpeg_timeout_sec: int = Field(default=600, ge=10)
 
     max_download_mb: int = Field(default=1024, ge=1)
+    max_download_bytes: int | None = Field(default=None, ge=1)
     download_timeout_sec: int = Field(default=120, ge=5)
     allow_private_urls: bool = Field(default=False)
+
+    # YouTube & Whisper transcription / captioning
+    whisper_model: str = Field(default="base")
+    whisper_device: str = Field(default="cpu")
+    whisper_compute_type: str = Field(default="int8")
+    youtube_max_duration_sec: int = Field(default=7200, ge=1)
+    subtitle_max_words_per_line: int = Field(default=6, ge=1, le=20)
 
     release_dir: Path = Field(default=Path("./workspace/releases"))
     webhook_url: str | None = Field(default=None)
@@ -73,8 +81,18 @@ class Settings(BaseModel):
             ffprobe_bin=os.getenv("VIDEO_MCP_FFPROBE_BIN", "ffprobe"),
             ffmpeg_timeout_sec=_env_int("VIDEO_MCP_FFMPEG_TIMEOUT_SEC", 600),
             max_download_mb=_env_int("VIDEO_MCP_MAX_DOWNLOAD_MB", 1024),
+            max_download_bytes=(
+                int(os.environ["VIDEO_MCP_MAX_DOWNLOAD_BYTES"])
+                if os.getenv("VIDEO_MCP_MAX_DOWNLOAD_BYTES")
+                else None
+            ),
             download_timeout_sec=_env_int("VIDEO_MCP_DOWNLOAD_TIMEOUT_SEC", 120),
             allow_private_urls=_env_bool("VIDEO_MCP_ALLOW_PRIVATE_URLS", False),
+            whisper_model=os.getenv("VIDEO_MCP_WHISPER_MODEL", "base"),
+            whisper_device=os.getenv("VIDEO_MCP_WHISPER_DEVICE", "cpu"),
+            whisper_compute_type=os.getenv("VIDEO_MCP_WHISPER_COMPUTE_TYPE", "int8"),
+            youtube_max_duration_sec=_env_int("VIDEO_MCP_YOUTUBE_MAX_DURATION_SEC", 7200),
+            subtitle_max_words_per_line=_env_int("VIDEO_MCP_SUBTITLE_MAX_WORDS_PER_LINE", 6),
             release_dir=Path(
                 os.getenv("VIDEO_MCP_RELEASE_DIR", str(release_default))
             ).expanduser().resolve(),
@@ -83,6 +101,12 @@ class Settings(BaseModel):
             host=os.getenv("VIDEO_MCP_HOST", "127.0.0.1"),
             port=_env_int("VIDEO_MCP_PORT", 8000),
         )
+
+    @property
+    def effective_max_download_bytes(self) -> int:
+        if self.max_download_bytes is not None:
+            return self.max_download_bytes
+        return self.max_download_mb * 1024 * 1024
 
     def ensure_directories(self) -> None:
         """Create required workspace subdirectories if they do not exist."""

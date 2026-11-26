@@ -43,3 +43,46 @@ def list_sources(app: AppContext, limit: int = 50) -> dict[str, Any]:
     sources = app.store.list_sources(limit=limit)
     return {"count": len(sources), "sources": [s.model_dump() for s in sources]}
 
+
+async def transcribe_source(
+    app: AppContext,
+    source_id: str,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+) -> dict[str, Any]:
+    """Return timestamped transcript lines & structured segments for a source (cached in SQLite)."""
+    src = app.store.get_source(source_id)
+    if src is None:
+        raise ValueError(f"Source not found: {source_id}")
+
+    cached = True
+    segments = app.store.get_transcript(source_id)
+    if segments is None:
+        cached = False
+        segments = await app.transcriber.transcribe_media(
+            Path(src.local_path), word_timestamps=True
+        )
+        app.store.save_transcript(source_id, segments)
+        app.store.log_activity(
+            category="transcribe",
+            message=f"Transcribed source '{src.filename}' ({len(segments)} segments)",
+            details={"source_id": source_id, "segment_count": len(segments)},
+        )
+
+    filtered = [
+        seg
+        for seg in segments
+        if (start_sec is None or seg.end >= start_sec)
+        and (end_sec is None or seg.start <= end_sec)
+    ]
+    formatted_lines = [
+        f"[{seg.start:.2f}s -> {seg.end:.2f}s] {seg.text}" for seg in filtered
+    ]
+    return {
+        "source_id": source_id,
+        "cached": cached,
+        "segment_count": len(filtered),
+        "transcript_lines": formatted_lines,
+        "segments": [seg.model_dump() for seg in filtered],
+    }
+

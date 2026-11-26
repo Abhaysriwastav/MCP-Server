@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,22 @@ class FFmpegRunner:
         for label, binary in (("ffmpeg", self.ffmpeg_bin), ("ffprobe", self.ffprobe_bin)):
             if shutil.which(binary) is None and not Path(binary).is_file():
                 raise FFmpegError(f"{label} binary not found: {binary}")
+
+    def has_filter(self, filter_name: str) -> bool:
+        """Return True if the configured ffmpeg binary includes `filter_name`."""
+        try:
+            proc = subprocess.run(
+                [self.ffmpeg_bin, "-hide_banner", "-filters"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            return any(
+                f" {filter_name} " in line for line in proc.stdout.splitlines()
+            )
+        except Exception:
+            return False
 
     async def probe(self, media_path: Path) -> dict[str, Any]:
         """Run ffprobe on a media file and return normalized stream/format metadata."""

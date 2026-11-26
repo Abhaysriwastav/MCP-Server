@@ -18,6 +18,25 @@ class SourceKind(StrEnum):
     LOCAL = "local"
     HTTP = "http"
     S3 = "s3"
+    YOUTUBE = "youtube"
+
+
+class TranscriptWord(BaseModel):
+    """Word-level timestamp emitted by Whisper."""
+
+    word: str
+    start: float = Field(ge=0.0)
+    end: float = Field(ge=0.0)
+    probability: float | None = None
+
+
+class TranscriptSegment(BaseModel):
+    """Segment-level transcript with optional word-level timestamps."""
+
+    start: float = Field(ge=0.0)
+    end: float = Field(ge=0.0)
+    text: str
+    words: list[TranscriptWord] = Field(default_factory=list)
 
 
 class SourceAsset(BaseModel):
@@ -110,6 +129,14 @@ class BurnSubtitlesOp(BaseModel):
     subtitle_path: str
 
 
+class AutoCaptionOp(BaseModel):
+    op: Literal["auto_caption"] = "auto_caption"
+    max_words_per_cue: int | None = Field(default=None, ge=1, le=20)
+    max_chars_per_cue: int = Field(default=38, ge=10, le=120)
+    font_size: int = Field(default=20, ge=10, le=72)
+    margin_v: int = Field(default=55, ge=0, le=240)
+
+
 EditOperation = Annotated[
     Union[
         TrimOp,
@@ -121,6 +148,7 @@ EditOperation = Annotated[
         TextOverlayOp,
         WatermarkOp,
         BurnSubtitlesOp,
+        AutoCaptionOp,
     ],
     Field(discriminator="op"),
 ]
@@ -138,7 +166,16 @@ class RenderedArtifact(BaseModel):
     """A single rendered media file or metadata artifact produced by a job."""
 
     artifact_id: str
-    kind: Literal["video_16x9", "video_9x16", "video_custom", "thumbnail", "manifest", "probe"]
+    kind: Literal[
+        "video_16x9",
+        "video_9x16",
+        "video_custom",
+        "thumbnail",
+        "manifest",
+        "probe",
+        "subtitles_srt",
+        "transcript",
+    ]
     path: str
     sha256: str
     size_bytes: int

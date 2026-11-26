@@ -21,6 +21,25 @@ class SourceResolutionError(RuntimeError):
     """Raised when a local, HTTP(S), or cloud source cannot be resolved safely."""
 
 
+_YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+
+
+def is_youtube_url(url: str) -> bool:
+    """Return True if `url` is an http(s) YouTube watch, share, or shorts URL."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.lower()
+    return host in _YOUTUBE_HOSTS or host.endswith(".youtube.com")
+
+
 def _is_forbidden_ip(ip_str: str) -> bool:
     addr = ipaddress.ip_address(ip_str)
     return (
@@ -63,9 +82,11 @@ class SourceResolver:
         self.runner = runner
 
     async def resolve(self, uri: str, probe_media: bool = True) -> SourceAsset:
-        """Resolve a local path, http(s):// URL, or s3:// URI into a SourceAsset."""
+        """Resolve a local path, http(s):// URL, YouTube URL, or s3:// URI into a SourceAsset."""
         parsed = urlparse(uri)
         if parsed.scheme in {"http", "https"}:
+            if is_youtube_url(uri):
+                return await self._resolve_youtube(uri, probe_media=probe_media)
             return await self._resolve_http(uri, probe_media=probe_media)
         if parsed.scheme == "s3":
             return await self._resolve_s3(uri, probe_media=probe_media)
@@ -106,7 +127,7 @@ class SourceResolver:
         dest = self.settings.workspace_dir / "sources" / f"http_{url_hash}{ext}"
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        max_bytes = self.settings.max_download_mb * 1024 * 1024
+        max_bytes = self.settings.effective_max_download_bytes
         timeout = httpx.Timeout(self.settings.download_timeout_sec)
 
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -181,6 +202,108 @@ class SourceResolver:
             sha256=digest,
             size_bytes=dest.stat().st_size,
             filename=filename,
+            probe=probe_data,
+        )
+
+    async def _resolve_youtube(self, url: str, probe_media: bool) -> SourceAsset:
+        _validate_public_url(url, allow_private=self.settings.allow_private_urls)
+        try:
+            import yt_dlp  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise SourceResolutionError(
+                "YouTube source requested but yt-dlp is not installed. "
+                "Install with: pip install 'video-automation-mcp[youtube]'"
+            ) from exc
+
+        sources_dir = (self.settings.workspace_dir / "sources").resolve()
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        out_template = str(sources_dir / f"yt_{url_hash}.%(ext)s")
+        max_bytes = self.settings.effective_max_download_bytes
+        max_dur = self.settings.youtube_max_duration_sec
+
+        ydl_opts_info: dict[str, object] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "extract_flat": False,
+        }
+
+        def _extract_info() -> dict[str, object]:
+            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not isinstance(info, dict):
+                    raise SourceResolutionError(f"Unable to extract YouTube metadata for: {url}")
+                return info
+
+        info = await asyncio.to_thread(_extract_info)
+        duration = info.get("duration")
+        if isinstance(duration, (int, float)) and duration > max_dur:
+            raise SourceResolutionError(
+                f"YouTube video duration ({duration}s) exceeds youtube_max_duration_sec ({max_dur}s)"
+            )
+
+        est_bytes = info.get("filesize") or info.get("filesize_approx")
+        if isinstance(est_bytes, (int, float)) and est_bytes > max_bytes:
+            raise SourceResolutionError(
+                f"YouTube video size ({int(est_bytes)} bytes) exceeds max download limit ({max_bytes} bytes)"
+            )
+
+        ydl_opts_dl: dict[str, object] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "outtmpl": out_template,
+            "max_filesize": max_bytes,
+        }
+
+        def _download() -> Path:
+            with yt_dlp.YoutubeDL(ydl_opts_dl) as ydl:
+                dl_info = ydl.extract_info(url, download=True)
+                if isinstance(dl_info, dict):
+                    prepared = ydl.prepare_filename(dl_info)
+                    mp4_candidate = Path(prepared).with_suffix(".mp4")
+                    if mp4_candidate.is_file():
+                        return mp4_candidate.resolve()
+                    prep_path = Path(prepared)
+                    if prep_path.is_file():
+                        return prep_path.resolve()
+            fallback = sources_dir / f"yt_{url_hash}.mp4"
+            if fallback.is_file():
+                return fallback.resolve()
+            raise SourceResolutionError(f"yt-dlp completed but output file was not found for: {url}")
+
+        dest = await asyncio.to_thread(_download)
+        if sources_dir not in dest.parents:
+            raise SourceResolutionError(f"Downloaded YouTube path escaped workspace: {dest}")
+
+        size_bytes = dest.stat().st_size
+        if size_bytes > max_bytes:
+            dest.unlink(missing_ok=True)
+            raise SourceResolutionError(
+                f"Downloaded YouTube file ({size_bytes} bytes) exceeds max download limit ({max_bytes} bytes)"
+            )
+
+        digest = sha256_file(dest)
+        probe_data = await self.runner.probe(dest) if probe_media else {}
+        title = str(info.get("title") or dest.stem)
+        probe_data["youtube"] = {
+            "title": title,
+            "duration_sec": duration,
+            "uploader": info.get("uploader"),
+            "webpage_url": info.get("webpage_url") or url,
+        }
+
+        return SourceAsset(
+            source_id=f"src_{uuid.uuid4().hex[:12]}",
+            uri=url,
+            kind=SourceKind.YOUTUBE,
+            local_path=str(dest),
+            sha256=digest,
+            size_bytes=size_bytes,
+            filename=dest.name,
             probe=probe_data,
         )
 

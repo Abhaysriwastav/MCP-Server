@@ -51,7 +51,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         uri: str,
         probe_media: bool = True,
     ) -> dict[str, Any]:
-        """Resolve a local path, http(s):// URL, or s3:// URI into the workspace."""
+        """Resolve a local path, http(s):// URL, YouTube URL, or s3:// URI into the workspace."""
         return await ingest.ingest_source(_app(ctx), uri=uri, probe_media=probe_media)
 
     @mcp.tool()
@@ -63,6 +63,18 @@ def build_server(settings: Settings | None = None) -> FastMCP:
     def list_sources(ctx: Context, limit: int = 50) -> dict[str, Any]:
         """List recently ingested media sources."""
         return ingest.list_sources(_app(ctx), limit=limit)
+
+    @mcp.tool()
+    async def transcribe_source(
+        ctx: Context,
+        source_id: str,
+        start_sec: float | None = None,
+        end_sec: float | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe a registered source with Whisper and cache segments in SQLite."""
+        return await ingest.transcribe_source(
+            _app(ctx), source_id=source_id, start_sec=start_sec, end_sec=end_sec
+        )
 
     # ------------------------------------------------------------------
     # Video Editing & Dual-Output Rendering Tools
@@ -80,12 +92,29 @@ def build_server(settings: Settings | None = None) -> FastMCP:
 
         output_profile: 'landscape_16x9', 'vertical_9x16', or 'both' (default).
         operations: list of dicts with 'op' in {trim, scale, reframe, audio_normalize,
-                    fade, speed, text_overlay, watermark, burn_subtitles}.
+                    fade, speed, text_overlay, watermark, burn_subtitles, auto_caption}.
         """
         return editing.create_edit_job(
             _app(ctx),
             title=title,
             source_ids=source_ids,
+            operations=operations,
+            output_profile=output_profile,
+        )
+
+    @mcp.tool()
+    def update_edit_job(
+        ctx: Context,
+        job_id: str,
+        title: str | None = None,
+        operations: list[dict[str, Any]] | None = None,
+        output_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Update an edit job's plan and reset it to DRAFT, clearing stale approvals."""
+        return editing.update_edit_job(
+            _app(ctx),
+            job_id=job_id,
+            title=title,
             operations=operations,
             output_profile=output_profile,
         )

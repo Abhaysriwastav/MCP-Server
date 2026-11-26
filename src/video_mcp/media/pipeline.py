@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
+from video_mcp.media.transcriber import Transcriber, generate_srt
 from video_mcp.models import (
     AudioNormalizeOp,
+    AutoCaptionOp,
     BurnSubtitlesOp,
     EditOperation,
     FadeOp,
@@ -42,7 +44,24 @@ def _escape_drawtext(text: str) -> str:
 
 
 def _escape_filter_path(path: Path) -> str:
-    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    """Escape a filesystem path for FFmpeg's `subtitles=` filtergraph option."""
+    return (
+        str(path)
+        .replace("\\", "/")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def _subtitle_force_style(font_size: int = 20, margin_v: int = 55) -> str:
+    """Return ASS force_style string legible across both 16:9 and 9:16 exports."""
+    return (
+        f"FontName=Arial,FontSize={font_size},Bold=1,"
+        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,"
+        f"BorderStyle=1,Outline=2,Shadow=1,MarginV={margin_v},Alignment=2"
+    )
 
 
 def _atempo_chain(factor: float) -> list[str]:
@@ -74,9 +93,17 @@ def _reframe_filter(width: int, height: int, mode: str = "crop") -> str:
 class VideoPipeline:
     """Executes edit operations, renders 16:9 / 9:16 / both outputs, thumbnails, and manifests."""
 
-    def __init__(self, runner: FFmpegRunner, workspace_dir: Path) -> None:
+    def __init__(
+        self,
+        runner: FFmpegRunner,
+        workspace_dir: Path,
+        transcriber: Transcriber | None = None,
+        default_max_words_per_line: int = 6,
+    ) -> None:
         self.runner = runner
         self.workspace_dir = workspace_dir
+        self.transcriber = transcriber
+        self.default_max_words_per_line = default_max_words_per_line
 
     async def render_job(
         self,
@@ -103,21 +130,77 @@ class VideoPipeline:
             base_input = job_dir / "concat_base.mp4"
             has_audio = await self._concat_sources(sources, base_input)
 
-        # Step 2: Apply composable editing operations into an edited master (skip re-encode if no ops)
-        if operations:
-            master_path = job_dir / "master_edited.mp4"
+        # Step 2: Separate auto_caption from pre-caption edit operations so that
+        # trim/concat/speed run first, then transcription & SRT generation run on
+        # the cut clip (timestamps starting at 00:00:00,000), then subtitles are
+        # burned into master_edited.mp4 before splitting into 16:9 and 9:16.
+        caption_ops = [op for op in operations if isinstance(op, AutoCaptionOp)]
+        pre_caption_ops = [op for op in operations if not isinstance(op, AutoCaptionOp)]
+        artifacts: list[RenderedArtifact] = []
+
+        if pre_caption_ops:
+            pre_caption_path = job_dir / ("pre_caption.mp4" if caption_ops else "master_edited.mp4")
             await self._apply_operations(
                 input_path=base_input,
-                output_path=master_path,
-                operations=operations,
+                output_path=pre_caption_path,
+                operations=pre_caption_ops,
                 has_audio=has_audio,
                 watermark_sources=watermark_sources or {},
             )
         else:
-            master_path = base_input
+            pre_caption_path = base_input
+
+        if caption_ops:
+            if self.transcriber is None:
+                raise RuntimeError("AutoCaptionOp requested but Transcriber is not configured.")
+            cap_op = caption_ops[-1]
+            segments = await self.transcriber.transcribe_media(
+                pre_caption_path, word_timestamps=True
+            )
+            transcript_path = job_dir / "transcript.json"
+            transcript_path.write_text(
+                json.dumps([s.model_dump() for s in segments], indent=2),
+                encoding="utf-8",
+            )
+            artifacts.append(
+                self._make_artifact(
+                    kind="transcript",
+                    path=transcript_path,
+                    mime_type="application/json",
+                    metadata={"segment_count": len(segments)},
+                )
+            )
+
+            srt_path = job_dir / "captions.srt"
+            generate_srt(
+                segments=segments,
+                output_srt_path=srt_path,
+                max_words_per_cue=cap_op.max_words_per_cue or self.default_max_words_per_line,
+                max_chars_per_cue=cap_op.max_chars_per_cue,
+            )
+            artifacts.append(
+                self._make_artifact(
+                    kind="subtitles_srt",
+                    path=srt_path,
+                    mime_type="application/x-subrip",
+                    metadata={"segment_count": len(segments)},
+                )
+            )
+
+            master_path = job_dir / "master_edited.mp4"
+            pre_probe = await self.runner.probe(pre_caption_path)
+            await self._burn_subtitles_only(
+                input_path=pre_caption_path,
+                output_path=master_path,
+                srt_path=srt_path,
+                has_audio=bool(pre_probe.get("has_audio", has_audio)),
+                font_size=cap_op.font_size,
+                margin_v=cap_op.margin_v,
+            )
+        else:
+            master_path = pre_caption_path
 
         master_probe = await self.runner.probe(master_path)
-        artifacts: list[RenderedArtifact] = []
 
         # Step 3: Export requested output profile(s)
         targets: list[tuple[str, str, int, int]] = []
@@ -336,7 +419,10 @@ class VideoPipeline:
                 sub_path = Path(op.subtitle_path)
                 if not sub_path.is_file():
                     raise FileNotFoundError(f"Subtitle file not found: {sub_path}")
-                v_filters.append(f"subtitles='{_escape_filter_path(sub_path)}'")
+                style = _subtitle_force_style()
+                v_filters.append(
+                    f"subtitles=filename='{_escape_filter_path(sub_path)}':force_style='{style}'"
+                )
             elif isinstance(op, WatermarkOp):
                 if op.image_source_id not in watermark_sources:
                     raise ValueError(f"Watermark source not found: {op.image_source_id}")
@@ -398,6 +484,37 @@ class VideoPipeline:
                 str(output_path),
             ]
         )
+        await self.runner.run_ffmpeg(args)
+
+    async def _burn_subtitles_only(
+        self,
+        input_path: Path,
+        output_path: Path,
+        srt_path: Path,
+        has_audio: bool,
+        font_size: int = 20,
+        margin_v: int = 55,
+    ) -> None:
+        style = _subtitle_force_style(font_size=font_size, margin_v=margin_v)
+        vf = f"subtitles=filename='{_escape_filter_path(srt_path)}':force_style='{style}'"
+        args = [
+            "-i",
+            str(input_path),
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            *(["-c:a", "copy"] if has_audio else ["-an"]),
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
         await self.runner.run_ffmpeg(args)
 
     async def _export_rendition(
