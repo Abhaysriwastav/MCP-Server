@@ -86,3 +86,55 @@ async def transcribe_source(
         "segments": [seg.model_dump() for seg in filtered],
     }
 
+
+async def find_dialogue_moments(
+    app: AppContext,
+    source_id: str,
+    query: str | None = None,
+    padding_sec: float = 2.0,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Search a source's transcript for dialogue phrases (or top highlight moments) with clip bounds."""
+    transcript = await transcribe_source(app, source_id=source_id)
+    segments = transcript["segments"]
+    q = (query or "").strip().lower()
+
+    candidates: list[dict[str, Any]] = []
+    for seg in segments:
+        text = str(seg["text"]).strip()
+        if not text:
+            continue
+        if q:
+            if q not in text.lower():
+                continue
+            score = 10.0 + text.lower().count(q)
+        else:
+            # Heuristic highlight score: punchy speech + punctuation
+            words = len(text.split())
+            exclaim = text.count("!") * 2.0 + text.count("?") * 1.5
+            score = min(words, 25) * 0.4 + exclaim
+
+        start_sec = round(max(0.0, float(seg["start"]) - padding_sec), 2)
+        end_sec = round(float(seg["end"]) + padding_sec, 2)
+        candidates.append(
+            {
+                "start_sec": start_sec,
+                "end_sec": end_sec,
+                "dialogue_start": round(float(seg["start"]), 2),
+                "dialogue_end": round(float(seg["end"]), 2),
+                "text": text,
+                "score": round(score, 2),
+            }
+        )
+
+    if not q:
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+
+    return {
+        "source_id": source_id,
+        "query": query or "",
+        "match_count": len(candidates[:limit]),
+        "matches": candidates[:limit],
+        "transcript_lines": transcript["transcript_lines"],
+    }
+

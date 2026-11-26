@@ -146,13 +146,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
-          <span>Upload Video from Device</span>
+          <span>Ingest Video (Device Upload or YouTube / URL)</span>
           <span class="mono" id="upload-status">Ready</span>
         </div>
         <div class="card-body">
           <div class="upload-box" id="drop-zone">
             <input type="file" id="video-file" accept="video/*,.mp4,.mov,.mkv,.webm" />
-            <input type="text" id="upload-title" placeholder="Job title (optional)" style="max-width: 220px;" />
+            <input type="text" id="upload-title" placeholder="Job title (optional)" style="max-width: 200px;" />
             <select id="upload-profile">
               <option value="both">Both (16:9 + 9:16 + metadata)</option>
               <option value="landscape_16x9">Landscape 16:9</option>
@@ -160,13 +160,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </select>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
               <input type="checkbox" id="upload-autorender" checked />
-              <span>Auto-create &amp; render job</span>
+              <span>Auto-render</span>
             </label>
-            <button class="btn" id="upload-btn" onclick="uploadSelectedVideo()">Upload Video</button>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+              <input type="checkbox" id="upload-autocaption" />
+              <span>Auto-caption (Whisper)</span>
+            </label>
+            <button class="btn" id="upload-btn" onclick="uploadSelectedVideo()">Upload File</button>
+            <div style="width:100%;display:flex;gap:10px;align-items:center;margin-top:4px;">
+              <input type="text" id="ingest-url" placeholder="Paste YouTube URL (youtube.com / youtu.be / shorts) or HTTP/S3 URL..." style="flex:1;" />
+              <button class="btn btn-sec" id="ingest-url-btn" onclick="ingestUrl()">Ingest YouTube / URL</button>
+            </div>
             <div class="progress-wrap" id="upload-progress-wrap">
               <div class="progress-bar" id="upload-progress-bar"></div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 18px;">
+        <div class="card-head">
+          <span>Clip Viral Dialogue (Transcript Search)</span>
+          <span class="mono" id="dialogue-status">Select a source</span>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+            <select id="dialogue-source" style="min-width:220px;max-width:300px;"></select>
+            <input type="text" id="dialogue-query" placeholder="Search dialogue (e.g. 'clutch') or leave blank for top moments" style="flex:1;min-width:220px;" />
+            <input type="number" id="dialogue-padding" value="2" min="0" max="15" step="0.5" style="width:90px;" title="Buffer seconds before/after" />
+            <button class="btn" id="dialogue-search-btn" onclick="findDialogueMoments()">Find &amp; Clip</button>
+          </div>
+          <div id="dialogue-results" style="margin-top:12px;"></div>
         </div>
       </div>
 
@@ -291,9 +315,97 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       renderKPIs(data.summary);
       renderJobs(data.jobs);
       renderActivity(data.activity);
+      renderSourceSelect(data.sources || []);
       if (selectedJobId) {
         const job = data.jobs.find(j => j.job_id === selectedJobId);
         if (job) renderInspector(job);
+      }
+    }
+
+    function renderSourceSelect(sources) {
+      const sel = document.getElementById("dialogue-source");
+      if (!sel) return;
+      const prev = sel.value;
+      if (!sources.length) {
+        sel.innerHTML = `<option value="">No sources ingested yet</option>`;
+        return;
+      }
+      sel.innerHTML = sources.map(s => {
+        const label = (s.probe && s.probe.youtube && s.probe.youtube.title) || s.filename;
+        return `<option value="${s.source_id}">${label} (${s.source_id})</option>`;
+      }).join("");
+      if (prev && sources.some(s => s.source_id === prev)) sel.value = prev;
+    }
+
+    async function findDialogueMoments() {
+      const sourceId = document.getElementById("dialogue-source").value;
+      const query = document.getElementById("dialogue-query").value.trim();
+      const padding = Number(document.getElementById("dialogue-padding").value || 2);
+      const statusEl = document.getElementById("dialogue-status");
+      const outEl = document.getElementById("dialogue-results");
+      const btn = document.getElementById("dialogue-search-btn");
+      if (!sourceId) {
+        showToast("Ingest or upload a video first.");
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Transcribing / searching...";
+      try {
+        const res = await fetch(`/api/sources/${sourceId}/find_dialogue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: query || null, padding_sec: padding, limit: 8 }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = "Search failed";
+          showToast(`Error: ${data.error || res.status}`);
+          return;
+        }
+        statusEl.textContent = `${data.match_count} match(es)`;
+        if (!data.matches.length) {
+          outEl.innerHTML = `<div style="color:var(--muted);font-size:13px;">No matching spoken dialogue found.</div>`;
+          return;
+        }
+        outEl.innerHTML = data.matches.map((m, idx) => `
+          <div class="act-item" style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px;">
+            <div>
+              <div class="mono" style="color:var(--accent)">[${m.start_sec}s → ${m.end_sec}s] (score: ${m.score})</div>
+              <div>"${m.text}"</div>
+            </div>
+            <button class="btn" onclick="clipDialogueMoment('${sourceId}', ${m.start_sec}, ${m.end_sec}, ${idx})">Clip &amp; Render</button>
+          </div>
+        `).join("");
+      } catch (err) {
+        statusEl.textContent = "Search error";
+        showToast(String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function clipDialogueMoment(sourceId, startSec, endSec, idx) {
+      const profile = document.getElementById("upload-profile").value;
+      const captionChecked = document.getElementById("upload-autocaption").checked;
+      const ops = [{ op: "trim", start_sec: startSec, end_sec: endSec }];
+      if (captionChecked) ops.push({ op: "auto_caption" });
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `Viral Clip #${idx + 1} (${startSec}s-${endSec}s)`,
+          source_ids: [sourceId],
+          output_profile: profile,
+          operations: ops,
+          auto_render: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.job) {
+        showToast(`Started clipping ${data.job.job_id}`);
+        await refreshAll();
+      } else {
+        showToast(`Clip error: ${data.error || res.status}`);
       }
     }
 
@@ -372,6 +484,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const videos = (job.artifacts || []).filter(a => a.kind.startsWith("video_"));
       const thumbs = (job.artifacts || []).filter(a => a.kind === "thumbnail");
       const actions = [];
+      const hasAutoCaption = (job.operations || []).some(op => op.op === "auto_caption");
+      if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasAutoCaption) {
+        actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','auto_caption')">Add Auto-Caption &amp; Re-render</button>`);
+      }
       if (job.status === "ready_for_review" || job.status === "rejected") {
         actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','request_approval')">Request Approval</button>`);
       }
@@ -509,25 +625,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           showToast(`Uploaded ${src.filename} (${src.source_id})`);
           inputReset();
 
-          if (document.getElementById("upload-autorender").checked) {
-            const title = document.getElementById("upload-title").value.trim() || src.filename;
-            const profile = document.getElementById("upload-profile").value;
-            const jobRes = await fetch("/api/jobs", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                title,
-                source_ids: [src.source_id],
-                output_profile: profile,
-                operations: [],
-                auto_render: true,
-              }),
-            });
-            const jobData = await jobRes.json();
-            if (jobRes.ok && jobData.job) {
-              showToast(`Started rendering ${jobData.job.job_id}`);
-            }
-          }
+          await maybeCreateJob(src);
           await refreshAll();
         } catch (err) {
           statusEl.textContent = "Upload error";
@@ -540,6 +638,68 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         showToast("Upload failed due to network error.");
       };
       xhr.send(file);
+    }
+
+    async function maybeCreateJob(src) {
+      if (!document.getElementById("upload-autorender").checked) return;
+      const ytTitle = src.probe && src.probe.youtube && src.probe.youtube.title;
+      const title = document.getElementById("upload-title").value.trim() || ytTitle || src.filename;
+      const profile = document.getElementById("upload-profile").value;
+      const ops = document.getElementById("upload-autocaption").checked ? [{ op: "auto_caption" }] : [];
+      const jobRes = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          source_ids: [src.source_id],
+          output_profile: profile,
+          operations: ops,
+          auto_render: true,
+        }),
+      });
+      const jobData = await jobRes.json();
+      if (jobRes.ok && jobData.job) {
+        showToast(`Started rendering ${jobData.job.job_id}`);
+      } else if (!jobRes.ok) {
+        showToast(`Job error: ${jobData.error || jobRes.status}`);
+      }
+    }
+
+    async function ingestUrl() {
+      const urlInput = document.getElementById("ingest-url");
+      const btn = document.getElementById("ingest-url-btn");
+      const statusEl = document.getElementById("upload-status");
+      const uri = urlInput.value.trim();
+      if (!uri) {
+        showToast("Please paste a YouTube or media URL first.");
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Ingesting URL...";
+      try {
+        const res = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uri }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = "Ingest failed";
+          showToast(`Ingest error: ${data.error || res.status}`);
+          return;
+        }
+        const src = data.source;
+        statusEl.textContent = `${data.status}: ${src.source_id}`;
+        showToast(`Ingested ${src.filename} (${src.source_id})`);
+        urlInput.value = "";
+        await maybeCreateJob(src);
+        await refreshAll();
+      } catch (err) {
+        statusEl.textContent = "Ingest error";
+        showToast(String(err));
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     function inputReset() {

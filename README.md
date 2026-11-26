@@ -30,10 +30,10 @@ src/video_mcp/
 ├── publishing/
 │   └── publisher.py        # Approval-gated publisher (local_release, webhook, s3)
 ├── dashboard/
-│   ├── server.py           # Live HTTP + SSE dashboard, device video upload & config API
-│   └── ui.py               # Single-page monitoring, preview & approval UI
+│   ├── server.py           # Live HTTP + SSE dashboard, upload, YouTube ingest, dialogue search & config API
+│   └── ui.py               # Single-page monitoring, viral dialogue clipper, preview & approval UI
 └── tools/
-    ├── ingest.py           # ingest_source, probe_media, list_sources, transcribe_source
+    ├── ingest.py           # ingest_source, probe_media, list_sources, transcribe_source, find_dialogue_moments
     ├── editing.py          # create_edit_job, update_edit_job, render_edit_job, get_job_status, list_jobs, generate_thumbnail
     ├── approval.py         # request_approval, approve_job, reject_job, get_approval_status, list_pending_approvals
     └── publishing.py       # publish_job, list_publish_targets
@@ -42,7 +42,8 @@ src/video_mcp/
 ## Prerequisites
 
 - Python 3.11+
-- `ffmpeg` and `ffprobe` installed and available on `PATH`
+- `ffmpeg` and `ffprobe` installed and available on `PATH` (for burned-in subtitles on macOS, use `brew install ffmpeg-full` or Docker)
+- **No paid API keys required** — YouTube downloads (`yt-dlp`), Whisper transcription (`faster-whisper`), FFmpeg editing, and SQLite state all run 100% locally.
 
 ## Installation
 
@@ -69,10 +70,15 @@ video-automation-mcp
 # Or Streamable HTTP MCP server
 VIDEO_MCP_TRANSPORT=streamable-http VIDEO_MCP_PORT=8000 video-automation-mcp
 
-# Live Web Dashboard (upload videos, monitor renders, approve & publish)
+# Live Web Dashboard (upload videos, ingest YouTube URLs, clip viral dialogue, monitor renders, approve & publish)
 video-automation-dashboard
-# Open http://127.0.0.1:8080
+# Open http://127.0.0.1:8080 (or set VIDEO_MCP_DASHBOARD_PORT=8081)
 ```
+
+### Dashboard Features
+- **Device Upload & YouTube / URL Ingest**: Upload local videos or paste `youtube.com` / `youtu.be` / `shorts` / HTTP / S3 links directly in the UI with optional **Auto-caption (Whisper)**.
+- **Clip Viral Dialogue**: Search spoken dialogue by keyword/phrase (or auto-rank top moments) and one-click **Clip & Render** into synced `16:9` + `9:16` outputs.
+- **Job Inspector & Approval Gate**: Stream rendered MP4s inline, add auto-captions to existing jobs, and **Approve / Reject / Publish**.
 
 ### Docker Compose
 

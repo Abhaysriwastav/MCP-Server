@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from video_mcp.context import AppContext
 from video_mcp.dashboard.ui import DASHBOARD_HTML
 from video_mcp.models import JobStatus, SourceAsset, SourceKind
-from video_mcp.tools import approval, editing, publishing
+from video_mcp.tools import approval, editing, ingest, publishing
 
 
 def _config_file_path(app: AppContext) -> Path:
@@ -314,6 +314,40 @@ def create_dashboard_server(
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
 
+            if path == "/api/ingest":
+                try:
+                    payload = self._read_json()
+                    uri = str(payload.get("uri") or "").strip()
+                    if not uri:
+                        raise ValueError("uri is required.")
+                    res = asyncio.run(ingest.ingest_source(app, uri=uri, probe_media=True))
+                    self._send_json(HTTPStatus.OK, res)
+                except Exception as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            if path.startswith("/api/sources/"):
+                parts = [p for p in path.removeprefix("/api/sources/").split("/") if p]
+                if len(parts) == 2 and parts[1] == "find_dialogue":
+                    source_id = parts[0]
+                    try:
+                        payload = self._read_json()
+                        res = asyncio.run(
+                            ingest.find_dialogue_moments(
+                                app,
+                                source_id=source_id,
+                                query=payload.get("query"),
+                                padding_sec=float(payload.get("padding_sec", 2.0)),
+                                limit=int(payload.get("limit", 10)),
+                            )
+                        )
+                        self._send_json(HTTPStatus.OK, res)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid source action path"})
+                return
+
             if path == "/api/jobs":
                 try:
                     payload = self._read_json()
@@ -374,6 +408,18 @@ def create_dashboard_server(
                             reviewer=str(payload.get("reviewer") or "dashboard-reviewer"),
                             reason=str(payload.get("reason") or "Rejected via dashboard"),
                         )
+                    elif action == "auto_caption":
+                        job = app.store.get_job(job_id)
+                        if job is None:
+                            raise ValueError(f"Job not found: {job_id}")
+                        ops = list(job.operations)
+                        if not any(op.get("op") == "auto_caption" for op in ops):
+                            ops.append({"op": "auto_caption"})
+                        res = editing.update_edit_job(app, job_id, operations=ops)
+                        threading.Thread(
+                            target=lambda: asyncio.run(editing.render_edit_job(app, job_id)),
+                            daemon=True,
+                        ).start()
                     elif action in {"publish", "publish_dry"}:
                         res = asyncio.run(
                             publishing.publish_job(

@@ -76,6 +76,23 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             _app(ctx), source_id=source_id, start_sec=start_sec, end_sec=end_sec
         )
 
+    @mcp.tool()
+    async def find_dialogue_moments(
+        ctx: Context,
+        source_id: str,
+        query: str | None = None,
+        padding_sec: float = 2.0,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Search a source's transcript for viral dialogue phrases and return trim bounds."""
+        return await ingest.find_dialogue_moments(
+            _app(ctx),
+            source_id=source_id,
+            query=query,
+            padding_sec=padding_sec,
+            limit=limit,
+        )
+
     # ------------------------------------------------------------------
     # Video Editing & Dual-Output Rendering Tools
     # ------------------------------------------------------------------
