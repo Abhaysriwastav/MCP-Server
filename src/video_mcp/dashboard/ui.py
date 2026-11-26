@@ -432,8 +432,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <nav id="main-nav">
       <button class="tab-btn active" onclick="switchTab('overview', this)">Overview</button>
       <button class="tab-btn" onclick="switchTab('ingest', this)">Ingest</button>
-      <button class="tab-btn" onclick="switchTab('studio', this)">Edit Studio</button>
-      <button class="tab-btn" onclick="switchTab('dialogue', this)">Dialogue Clipper</button>
+      <button class="tab-btn" id="nav-tab-studio" onclick="switchTab('studio', this)">Edit Studio</button>
+      <button class="tab-btn" onclick="switchTab('dialogue', this)">Viral Game Clipper</button>
       <button class="tab-btn" onclick="switchTab('jobs', this)">Jobs &amp; Activity</button>
       <button class="tab-btn" onclick="switchTab('config', this)">Configuration</button>
       <button class="tab-btn" onclick="refreshAll()">Refresh</button>
@@ -620,17 +620,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <section id="tab-dialogue" class="hidden">
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
-          <span>Clip Viral Dialogue (Transcript Search)</span>
+          <span>Viral Game Clipper (YouTube Comments, Likes, Heatmap, Catchy Dialogue &amp; Action Scenes)</span>
           <span class="mono" id="dialogue-status">Select a source</span>
         </div>
         <div class="card-body">
-          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-            <select id="dialogue-source" style="min-width:220px;max-width:300px;"></select>
-            <input type="text" id="dialogue-query" placeholder="Search dialogue (e.g. 'clutch') or leave blank for top moments" style="flex:1;min-width:220px;" />
-            <input type="number" id="dialogue-padding" value="2" min="0" max="15" step="0.5" style="width:90px;" title="Buffer seconds before/after" />
-            <button class="btn" id="dialogue-search-btn" onclick="findDialogueMoments()">Find &amp; Clip</button>
+          <div style="background:rgba(15,23,42,0.5);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
+              <input type="text" id="viral-url" placeholder="Paste GTA VI / GTA V / gaming YouTube URL (youtube.com / youtu.be / shorts) or media URL..." style="flex:1;min-width:240px;" />
+              <button type="button" class="btn" id="viral-ingest-url-btn" onclick="viralIngestUrlAndAnalyze()">Load URL &amp; Analyze</button>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+              <input type="file" id="viral-file" accept="video/*,.mp4,.mov,.mkv,.webm" style="flex:1;min-width:220px;" />
+              <button type="button" class="btn btn-sec" id="viral-upload-btn" onclick="viralUploadAndAnalyze()">Upload &amp; Analyze</button>
+            </div>
+            <div class="progress-wrap" id="viral-upload-progress-wrap">
+              <div class="progress-bar" id="viral-upload-progress-bar"></div>
+            </div>
           </div>
-          <div id="dialogue-results" style="margin-top:12px;"></div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+            <select id="dialogue-source" style="min-width:220px;max-width:300px;"></select>
+            <input type="text" id="dialogue-query" placeholder="Optional game/topic focus (e.g. GTA VI, Lucia, heist, explosion) or leave blank for auto-viral" style="flex:1;min-width:240px;" />
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Min(s): <input type="number" id="viral-min-sec" value="6" min="2" max="60" step="1" style="width:65px;" /></label>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Max(s): <input type="number" id="viral-max-sec" value="25" min="5" max="90" step="1" style="width:65px;" /></label>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Top N: <input type="number" id="viral-top-n" value="3" min="1" max="10" step="1" style="width:60px;" /></label>
+            <select id="viral-profile" title="Output format">
+              <option value="vertical_9x16" selected>Shorts / Reels 9:16</option>
+              <option value="both">Both (16:9 + 9:16)</option>
+              <option value="landscape_16x9">Landscape 16:9</option>
+            </select>
+            <input type="number" id="dialogue-padding" value="2" min="0" max="15" step="0.5" style="width:72px;" title="Dialogue search buffer seconds" />
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;">
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-refresh-comments" /><span>Refresh YT Comments/Likes</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-scene-detect" checked /><span>Detect Action Scenes</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-hook" checked /><span>Burn Hook Overlay</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-caption" checked /><span>Auto-Caption</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-facecrop" checked /><span>Smart 9:16 Face-Track</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-norm" checked /><span>Audio Normalize</span></label>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+            <button class="btn" id="viral-analyze-btn" onclick="analyzeViralClips()">Analyze Viral Clips</button>
+            <button class="btn btn-green" id="viral-extract-btn" onclick="autoExtractViralClips()">Auto-Extract Top Clips</button>
+            <button class="btn btn-sec" id="dialogue-search-btn" onclick="findDialogueMoments()">Dialogue Search Only</button>
+          </div>
+          <div id="viral-engagement-bar" style="display:none;margin-top:14px;padding:12px;border-radius:10px;background:rgba(15,23,42,0.65);border:1px solid var(--border);"></div>
+          <div id="viral-top-comments" style="display:none;margin-top:10px;"></div>
+          <div id="dialogue-results" style="margin-top:14px;"></div>
         </div>
       </div>
     </section>
@@ -1290,6 +1325,345 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       } else {
         showToast(`Render error: ${data.error || res.status}`);
       }
+    }
+
+    window._viralMoments = [];
+
+    function escHtml(str) {
+      return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function renderViralEngagement(eng, comments) {
+      const bar = document.getElementById("viral-engagement-bar");
+      const commEl = document.getElementById("viral-top-comments");
+      if (!eng) {
+        bar.style.display = "none";
+        commEl.style.display = "none";
+        return;
+      }
+      const views = Number(eng.view_count || 0).toLocaleString();
+      const likes = Number(eng.like_count || 0).toLocaleString();
+      const ratioPct = ((Number(eng.like_ratio || 0)) * 100).toFixed(2);
+      bar.style.display = "block";
+      bar.innerHTML = `
+        <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;">
+          <div>
+            <strong>${escHtml(eng.title || "")}</strong>
+            ${eng.uploader ? `<span class="mono" style="margin-left:8px;color:var(--muted)">by ${escHtml(eng.uploader)}</span>` : ""}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;" class="mono">
+            <span class="badge b-ready_for_review">Grade ${escHtml(eng.engagement_grade || "C")}</span>
+            <span>Views: ${views}</span>
+            <span>Likes: ${likes} (${ratioPct}%)</span>
+            <span>Comments Analyzed: ${eng.comments_analyzed || 0}</span>
+            <span>Heatmap Peaks: ${eng.heatmap_peaks || 0}</span>
+          </div>
+        </div>
+      `;
+      if (comments && comments.length) {
+        commEl.style.display = "block";
+        commEl.innerHTML = `
+          <details style="padding:8px 12px;border-radius:8px;background:rgba(15,23,42,0.5);border:1px solid var(--border);">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600;">Top Liked Comments (${comments.length})</summary>
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+              ${comments.map(c => `<div style="font-size:12px;color:var(--muted);"><span class="badge b-pending_approval" style="margin-right:6px;">${Number(c.likes || 0).toLocaleString()} likes</span>${escHtml(c.text)}</div>`).join("")}
+            </div>
+          </details>
+        `;
+      } else {
+        commEl.style.display = "none";
+        commEl.innerHTML = "";
+      }
+    }
+
+    async function viralIngestUrl() {
+      const urlInput = document.getElementById("viral-url");
+      const btn = document.getElementById("viral-ingest-url-btn");
+      const statusEl = document.getElementById("dialogue-status");
+      const uri = urlInput.value.trim();
+      if (!uri) {
+        showToast("Please paste a YouTube or video URL first.");
+        return null;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Downloading YouTube video & comments...";
+      try {
+        const res = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uri }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = "URL ingest failed";
+          showToast(`Ingest error: ${data.error || res.status}`);
+          return null;
+        }
+        const src = data.source;
+        statusEl.textContent = `Loaded ${src.filename} (${src.source_id})`;
+        showToast(`Loaded ${src.filename} (${src.source_id})`);
+        urlInput.value = "";
+        await refreshAll();
+        document.getElementById("dialogue-source").value = src.source_id;
+        return src.source_id;
+      } catch (err) {
+        statusEl.textContent = "URL ingest error";
+        showToast(String(err));
+        return null;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function viralUploadFile() {
+      return new Promise((resolve) => {
+        const fileInput = document.getElementById("viral-file");
+        const file = fileInput.files && fileInput.files[0];
+        const btn = document.getElementById("viral-upload-btn");
+        const statusEl = document.getElementById("dialogue-status");
+        const pWrap = document.getElementById("viral-upload-progress-wrap");
+        const bar = document.getElementById("viral-upload-progress-bar");
+        if (!file) {
+          showToast("Please choose a video file first.");
+          resolve(null);
+          return;
+        }
+        btn.disabled = true;
+        pWrap.style.display = "block";
+        bar.style.width = "0%";
+        statusEl.textContent = `Uploading ${file.name}...`;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/upload", true);
+        xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            bar.style.width = pct + "%";
+            statusEl.textContent = `Uploading ${file.name} (${pct}%)`;
+          }
+        };
+        xhr.onload = async () => {
+          btn.disabled = false;
+          setTimeout(() => { pWrap.style.display = "none"; }, 1200);
+          try {
+            const data = JSON.parse(xhr.responseText || "{}");
+            if (xhr.status >= 400 || !data.source) {
+              statusEl.textContent = "Upload failed";
+              showToast(`Upload error: ${data.error || xhr.status}`);
+              resolve(null);
+              return;
+            }
+            const src = data.source;
+            statusEl.textContent = `Uploaded ${src.filename} (${src.source_id})`;
+            showToast(`Uploaded ${src.filename} (${src.source_id})`);
+            fileInput.value = "";
+            await refreshAll();
+            document.getElementById("dialogue-source").value = src.source_id;
+            resolve(src.source_id);
+          } catch (err) {
+            statusEl.textContent = "Upload error";
+            showToast(String(err));
+            resolve(null);
+          }
+        };
+        xhr.onerror = () => {
+          btn.disabled = false;
+          pWrap.style.display = "none";
+          statusEl.textContent = "Network error";
+          showToast("Upload failed due to network error.");
+          resolve(null);
+        };
+        xhr.send(file);
+      });
+    }
+
+    async function viralIngestUrlAndAnalyze() {
+      const sid = await viralIngestUrl();
+      if (sid) await analyzeViralClips();
+    }
+
+    async function viralUploadAndAnalyze() {
+      const sid = await viralUploadFile();
+      if (sid) await analyzeViralClips();
+    }
+
+    async function resolveViralSourceId() {
+      const urlVal = (document.getElementById("viral-url").value || "").trim();
+      if (urlVal) return await viralIngestUrl();
+      const fileInput = document.getElementById("viral-file");
+      if (fileInput && fileInput.files && fileInput.files[0]) {
+        return await viralUploadFile();
+      }
+      return document.getElementById("dialogue-source").value || null;
+    }
+
+    async function analyzeViralClips() {
+      const sourceId = await resolveViralSourceId();
+      const query = document.getElementById("dialogue-query").value.trim() || null;
+      const minSec = Number(document.getElementById("viral-min-sec").value || 6);
+      const maxSec = Number(document.getElementById("viral-max-sec").value || 25);
+      const includeScenes = document.getElementById("viral-scene-detect").checked;
+      const refreshComments = document.getElementById("viral-refresh-comments").checked;
+      const statusEl = document.getElementById("dialogue-status");
+      const outEl = document.getElementById("dialogue-results");
+      const btn = document.getElementById("viral-analyze-btn");
+      if (!sourceId) {
+        showToast("Paste a YouTube URL, upload a video, or pick a source first.");
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Analyzing comments, heatmap, dialogue & scenes...";
+      try {
+        const res = await fetch(`/api/sources/${sourceId}/analyze_viral`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            max_clips: 10,
+            min_clip_sec: minSec,
+            max_clip_sec: maxSec,
+            include_scene_detection: includeScenes,
+            refresh_comments: refreshComments,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = "Analysis failed";
+          showToast(`Error: ${data.error || res.status}`);
+          return;
+        }
+        renderViralEngagement(data.video_engagement, data.top_comments);
+        window._viralMoments = data.moments || [];
+        statusEl.textContent = `${data.moment_count || 0} viral moment(s)`;
+        if (!window._viralMoments.length) {
+          outEl.innerHTML = `<div style="color:var(--muted);font-size:13px;">No viral highlights detected. Try clearing the filter or enabling Scene Detection.</div>`;
+          return;
+        }
+        outEl.innerHTML = window._viralMoments.map((m, idx) => `
+          <div class="act-item" style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:8px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:260px;">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+                <span class="badge b-approved">Score ${m.viral_score}/100</span>
+                <span class="mono" style="color:var(--cyan)">[${m.start_sec}s → ${m.end_sec}s · ${m.duration_sec}s]</span>
+                ${(m.signals || []).map(s => `<span class="badge b-ready_for_review">${escHtml(s)}</span>`).join("")}
+              </div>
+              ${m.dialogue_text ? `<div style="margin-bottom:4px;font-weight:600;">"${escHtml(m.dialogue_text)}"</div>` : ""}
+              <div style="font-size:12px;color:var(--muted);">Hook: ${escHtml(m.hook_text)} · ${escHtml(m.reason)}</div>
+              ${(m.matching_comments || []).map(c => `<div style="font-size:11px;color:#93c5fd;margin-top:3px;">&#128172; (${Number(c.likes || 0).toLocaleString()} likes) "${escHtml(c.text)}"</div>`).join("")}
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button class="btn" onclick="clipViralMoment('${sourceId}', ${idx})">Clip &amp; Render</button>
+              <button class="btn btn-sec" onclick="sendMomentToStudio('${sourceId}', ${idx})">Send to Edit Studio</button>
+            </div>
+          </div>
+        `).join("");
+      } catch (err) {
+        statusEl.textContent = "Analysis error";
+        showToast(String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function autoExtractViralClips() {
+      const sourceId = await resolveViralSourceId();
+      const btn = document.getElementById("viral-extract-btn");
+      const statusEl = document.getElementById("dialogue-status");
+      if (!sourceId) {
+        showToast("Paste a YouTube URL, upload a video, or pick a source first.");
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Extracting & queuing top viral clips...";
+      try {
+        const res = await fetch(`/api/sources/${sourceId}/extract_viral`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            top_n: Number(document.getElementById("viral-top-n").value || 3),
+            output_profile: document.getElementById("viral-profile").value,
+            query: document.getElementById("dialogue-query").value.trim() || null,
+            min_clip_sec: Number(document.getElementById("viral-min-sec").value || 6),
+            max_clip_sec: Number(document.getElementById("viral-max-sec").value || 25),
+            auto_caption: document.getElementById("viral-caption").checked,
+            smart_crop: document.getElementById("viral-facecrop").checked,
+            audio_normalize: document.getElementById("viral-norm").checked,
+            add_hook_overlay: document.getElementById("viral-hook").checked,
+            include_scene_detection: document.getElementById("viral-scene-detect").checked,
+            refresh_comments: document.getElementById("viral-refresh-comments").checked,
+            auto_render: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = "Extraction failed";
+          showToast(`Error: ${data.error || res.status}`);
+          return;
+        }
+        renderViralEngagement(data.video_engagement, []);
+        statusEl.textContent = `Queued ${data.extracted_count || 0} viral clip(s)`;
+        showToast(`Queued ${data.extracted_count || 0} viral clip(s) for rendering`);
+        await refreshAll();
+      } catch (err) {
+        statusEl.textContent = "Extraction error";
+        showToast(String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function clipViralMoment(sourceId, idx) {
+      const m = (window._viralMoments || [])[idx];
+      if (!m) return;
+      const profile = document.getElementById("viral-profile").value;
+      const ops = [{ op: "trim", start_sec: m.start_sec, end_sec: m.end_sec }];
+      if (document.getElementById("viral-norm").checked) ops.push({ op: "audio_normalize", target_i: -14.0 });
+      if (document.getElementById("viral-hook").checked && m.hook_text) {
+        ops.push({ op: "text_overlay", text: String(m.hook_text).slice(0, 120), position: "top" });
+      }
+      if (document.getElementById("viral-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
+      if (document.getElementById("viral-caption").checked) ops.push({ op: "auto_caption" });
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: m.title_suggestion || `Viral #${idx + 1} (${m.start_sec}s-${m.end_sec}s)`,
+          source_ids: [sourceId],
+          output_profile: profile,
+          operations: ops,
+          auto_render: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.job) {
+        showToast(`Started rendering ${data.job.job_id}`);
+        await refreshAll();
+      } else {
+        showToast(`Clip error: ${data.error || res.status}`);
+      }
+    }
+
+    function sendMomentToStudio(sourceId, idx) {
+      const m = (window._viralMoments || [])[idx];
+      if (!m) return;
+      const studioBtn = document.getElementById("nav-tab-studio");
+      switchTab("studio", studioBtn);
+      document.getElementById("builder-source").value = sourceId;
+      document.getElementById("builder-start").value = m.start_sec;
+      document.getElementById("builder-end").value = m.end_sec;
+      document.getElementById("builder-hook").value = m.hook_text || "";
+      document.getElementById("builder-profile").value = document.getElementById("viral-profile").value;
+      updateBuilderPreview();
+      const video = document.getElementById("builder-preview-video");
+      if (video) {
+        setTimeout(() => { try { video.currentTime = Number(m.start_sec || 0); } catch (e) {} }, 150);
+      }
+      showToast(`Loaded moment [${m.start_sec}s-${m.end_sec}s] into Edit Studio`);
     }
 
     async function findDialogueMoments() {

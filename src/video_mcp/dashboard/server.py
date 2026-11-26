@@ -385,6 +385,63 @@ def create_dashboard_server(
                     except Exception as exc:
                         self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                     return
+                if len(parts) == 2 and parts[1] == "analyze_viral":
+                    source_id = parts[0]
+                    try:
+                        payload = self._read_json()
+                        res = asyncio.run(
+                            ingest.analyze_viral_clips(
+                                app,
+                                source_id=source_id,
+                                query=payload.get("query"),
+                                max_clips=int(payload.get("max_clips", 8)),
+                                min_clip_sec=float(payload.get("min_clip_sec", 6.0)),
+                                max_clip_sec=float(payload.get("max_clip_sec", 25.0)),
+                                include_scene_detection=bool(payload.get("include_scene_detection", True)),
+                                refresh_comments=bool(payload.get("refresh_comments", False)),
+                            )
+                        )
+                        self._send_json(HTTPStatus.OK, res)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                if len(parts) == 2 and parts[1] == "extract_viral":
+                    source_id = parts[0]
+                    try:
+                        payload = self._read_json()
+                        res = asyncio.run(
+                            ingest.extract_viral_clips(
+                                app,
+                                source_id=source_id,
+                                top_n=int(payload.get("top_n", 3)),
+                                output_profile=str(payload.get("output_profile") or "vertical_9x16"),
+                                query=payload.get("query"),
+                                min_clip_sec=float(payload.get("min_clip_sec", 6.0)),
+                                max_clip_sec=float(payload.get("max_clip_sec", 25.0)),
+                                auto_caption=bool(payload.get("auto_caption", True)),
+                                smart_crop=bool(payload.get("smart_crop", True)),
+                                audio_normalize=bool(payload.get("audio_normalize", True)),
+                                add_hook_overlay=bool(payload.get("add_hook_overlay", True)),
+                                remove_silences=bool(payload.get("remove_silences", False)),
+                                color_preset=str(payload.get("color_preset") or "original"),
+                                include_scene_detection=bool(payload.get("include_scene_detection", True)),
+                                refresh_comments=bool(payload.get("refresh_comments", False)),
+                                auto_render=False,
+                            )
+                        )
+                        job_ids = [j["job_id"] for j in res.get("jobs", [])]
+                        if bool(payload.get("auto_render", True)) and job_ids:
+                            def _render_batch() -> None:
+                                for jid in job_ids:
+                                    try:
+                                        asyncio.run(editing.render_edit_job(app, jid))
+                                    except Exception:
+                                        pass
+                            threading.Thread(target=_render_batch, daemon=True).start()
+                        self._send_json(HTTPStatus.OK, res)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid source action path"})
                 return
 

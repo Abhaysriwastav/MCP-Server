@@ -8,6 +8,7 @@ import ipaddress
 import socket
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -38,6 +39,65 @@ def is_youtube_url(url: str) -> bool:
         return False
     host = parsed.hostname.lower()
     return host in _YOUTUBE_HOSTS or host.endswith(".youtube.com")
+
+
+def _normalize_youtube_engagement(
+    info: dict[str, Any], max_comments: int = 80
+) -> dict[str, Any]:
+    """Normalize YouTube engagement metrics, heatmap, chapters, and top comments."""
+    view_count = int(info.get("view_count") or 0)
+    like_count = int(info.get("like_count") or 0)
+    comment_count = int(info.get("comment_count") or 0)
+    like_ratio = round(like_count / view_count, 5) if view_count > 0 else 0.0
+
+    heatmap: list[dict[str, float]] = []
+    for item in info.get("heatmap") or []:
+        if isinstance(item, dict) and "start_time" in item and "value" in item:
+            heatmap.append(
+                {
+                    "start_time": float(item["start_time"]),
+                    "end_time": float(item.get("end_time") or item["start_time"]),
+                    "value": float(item["value"]),
+                }
+            )
+
+    chapters: list[dict[str, Any]] = []
+    for item in info.get("chapters") or []:
+        if isinstance(item, dict) and "start_time" in item:
+            chapters.append(
+                {
+                    "start_time": float(item["start_time"]),
+                    "end_time": float(item.get("end_time") or item["start_time"]),
+                    "title": str(item.get("title") or ""),
+                }
+            )
+
+    raw_comments: list[dict[str, Any]] = []
+    for c in info.get("comments") or []:
+        if not isinstance(c, dict):
+            continue
+        text = str(c.get("text") or "").strip()
+        if not text:
+            continue
+        raw_comments.append(
+            {
+                "text": text[:500],
+                "likes": int(c.get("like_count") or c.get("likes") or 0),
+                "author": str(c.get("author") or "")[:80],
+            }
+        )
+    raw_comments.sort(key=lambda x: x["likes"], reverse=True)
+    cap = max(0, max_comments)
+
+    return {
+        "view_count": view_count,
+        "like_count": like_count,
+        "comment_count": comment_count,
+        "like_ratio": like_ratio,
+        "heatmap": heatmap,
+        "chapters": chapters,
+        "comments": raw_comments[:cap] if cap else [],
+    }
 
 
 def _is_forbidden_ip(ip_str: str) -> bool:
@@ -205,6 +265,42 @@ class SourceResolver:
             probe=probe_data,
         )
 
+    async def fetch_youtube_engagement(self, url: str) -> dict[str, Any]:
+        """Fetch YouTube views, likes, comments, Most Replayed heatmap, and chapters without downloading."""
+        _validate_public_url(url, allow_private=self.settings.allow_private_urls)
+        try:
+            import yt_dlp  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise SourceResolutionError(
+                "YouTube engagement requested but yt-dlp is not installed. "
+                "Install with: pip install 'video-automation-mcp[youtube]'"
+            ) from exc
+
+        ydl_opts: dict[str, object] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "getcomments": self.settings.youtube_max_comments > 0,
+            "extractor_args": {
+                "youtube": {
+                    "max_comments": [str(self.settings.youtube_max_comments), "all", "0", "0"],
+                    "comment_sort": ["top"],
+                }
+            },
+        }
+
+        def _extract() -> dict[str, Any]:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not isinstance(info, dict):
+                    raise SourceResolutionError(f"Unable to extract YouTube engagement for: {url}")
+                return _normalize_youtube_engagement(
+                    info, max_comments=self.settings.youtube_max_comments
+                )
+
+        return await asyncio.to_thread(_extract)
+
     async def _resolve_youtube(self, url: str, probe_media: bool) -> SourceAsset:
         _validate_public_url(url, allow_private=self.settings.allow_private_urls)
         try:
@@ -289,12 +385,24 @@ class SourceResolver:
         digest = sha256_file(dest)
         probe_data = await self.runner.probe(dest) if probe_media else {}
         title = str(info.get("title") or dest.stem)
-        probe_data["youtube"] = {
+        yt_meta: dict[str, Any] = {
             "title": title,
             "duration_sec": duration,
             "uploader": info.get("uploader"),
             "webpage_url": info.get("webpage_url") or url,
         }
+        yt_meta.update(
+            _normalize_youtube_engagement(info, max_comments=self.settings.youtube_max_comments)
+        )
+        if self.settings.youtube_max_comments > 0 and not yt_meta.get("comments"):
+            try:
+                engagement = await self.fetch_youtube_engagement(url)
+                for key, val in engagement.items():
+                    if val or key not in yt_meta:
+                        yt_meta[key] = val
+            except Exception:
+                pass
+        probe_data["youtube"] = yt_meta
 
         return SourceAsset(
             source_id=f"src_{uuid.uuid4().hex[:12]}",

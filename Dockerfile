@@ -15,10 +15,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIDEO_MCP_WHISPER_DEVICE=auto \
     VIDEO_MCP_WHISPER_COMPUTE_TYPE=auto \
     VIDEO_MCP_OMNIVOICE_DEVICE=auto \
-    VIDEO_MCP_FFMPEG_HWACCEL=auto
+    VIDEO_MCP_FFMPEG_HWACCEL=auto \
+    VIDEO_MCP_YOUTUBE_MAX_COMMENTS=80 \
+    HF_HOME=/app/workspace/.cache/huggingface
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git ca-certificates libglib2.0-0 \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git ca-certificates libglib2.0-0 curl fontconfig fonts-dejavu-core nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv
 
@@ -31,8 +33,10 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu124 \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --no-deps . \
-    && mkdir -p /app/workspace
+    && mkdir -p /app/workspace /app/workspace/.cache/huggingface
 
 EXPOSE 8080 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD curl -sf http://127.0.0.1:8080/api/overview > /dev/null || exit 1
 
 CMD ["video-automation-dashboard"]

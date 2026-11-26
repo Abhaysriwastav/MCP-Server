@@ -52,6 +52,7 @@ class Settings(BaseModel):
     whisper_device: str = Field(default="auto")
     whisper_compute_type: str = Field(default="auto")
     youtube_max_duration_sec: int = Field(default=7200, ge=1)
+    youtube_max_comments: int = Field(default=80, ge=0, le=500)
     subtitle_max_words_per_line: int = Field(default=6, ge=1, le=20)
 
     # AI Voice Cloning
@@ -112,6 +113,7 @@ class Settings(BaseModel):
             whisper_device=os.getenv("VIDEO_MCP_WHISPER_DEVICE", "auto"),
             whisper_compute_type=os.getenv("VIDEO_MCP_WHISPER_COMPUTE_TYPE", "auto"),
             youtube_max_duration_sec=_env_int("VIDEO_MCP_YOUTUBE_MAX_DURATION_SEC", 7200),
+            youtube_max_comments=_env_int("VIDEO_MCP_YOUTUBE_MAX_COMMENTS", 80),
             subtitle_max_words_per_line=_env_int("VIDEO_MCP_SUBTITLE_MAX_WORDS_PER_LINE", 6),
             voice_provider=voice_provider,
             omnivoice_model=os.getenv("VIDEO_MCP_OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),

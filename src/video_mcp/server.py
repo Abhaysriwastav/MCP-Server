@@ -93,6 +93,68 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             limit=limit,
         )
 
+    @mcp.tool()
+    async def analyze_viral_clips(
+        ctx: Context,
+        source_id: str,
+        query: str | None = None,
+        max_clips: int = 8,
+        min_clip_sec: float = 6.0,
+        max_clip_sec: float = 25.0,
+        include_scene_detection: bool = True,
+        refresh_comments: bool = False,
+    ) -> dict[str, Any]:
+        """Rank viral moments using YouTube comments/likes, heatmap, catchy dialogue, and FFmpeg scenes."""
+        return await ingest.analyze_viral_clips(
+            _app(ctx),
+            source_id=source_id,
+            query=query,
+            max_clips=max_clips,
+            min_clip_sec=min_clip_sec,
+            max_clip_sec=max_clip_sec,
+            include_scene_detection=include_scene_detection,
+            refresh_comments=refresh_comments,
+        )
+
+    @mcp.tool()
+    async def extract_viral_clips(
+        ctx: Context,
+        source_id: str,
+        top_n: int = 3,
+        output_profile: str = "vertical_9x16",
+        query: str | None = None,
+        min_clip_sec: float = 6.0,
+        max_clip_sec: float = 25.0,
+        auto_caption: bool = True,
+        smart_crop: bool = True,
+        audio_normalize: bool = True,
+        add_hook_overlay: bool = True,
+        remove_silences: bool = False,
+        color_preset: str = "original",
+        include_scene_detection: bool = True,
+        refresh_comments: bool = False,
+        auto_render: bool = True,
+    ) -> dict[str, Any]:
+        """Extract top viral gaming/YouTube moments into ready-to-review vertical/landscape clips."""
+        return await ingest.extract_viral_clips(
+            _app(ctx),
+            source_id=source_id,
+            top_n=top_n,
+            output_profile=output_profile,
+            query=query,
+            min_clip_sec=min_clip_sec,
+            max_clip_sec=max_clip_sec,
+            auto_caption=auto_caption,
+            smart_crop=smart_crop,
+            audio_normalize=audio_normalize,
+            add_hook_overlay=add_hook_overlay,
+            remove_silences=remove_silences,
+            color_preset=color_preset,
+            include_scene_detection=include_scene_detection,
+            refresh_comments=refresh_comments,
+            auto_render=auto_render,
+        )
+
     # ------------------------------------------------------------------
     # Video Editing & Dual-Output Rendering Tools
     # ------------------------------------------------------------------

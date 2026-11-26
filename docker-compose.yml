@@ -16,6 +16,8 @@ services:
       VIDEO_MCP_WHISPER_COMPUTE_TYPE: auto
       VIDEO_MCP_OMNIVOICE_DEVICE: auto
       VIDEO_MCP_FFMPEG_HWACCEL: auto
+      VIDEO_MCP_YOUTUBE_MAX_COMMENTS: "80"
+      HF_HOME: /app/workspace/.cache/huggingface
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     deploy:
@@ -47,6 +49,8 @@ services:
       VIDEO_MCP_WHISPER_COMPUTE_TYPE: auto
       VIDEO_MCP_OMNIVOICE_DEVICE: auto
       VIDEO_MCP_FFMPEG_HWACCEL: auto
+      VIDEO_MCP_YOUTUBE_MAX_COMMENTS: "80"
+      HF_HOME: /app/workspace/.cache/huggingface
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     deploy:
