@@ -11,6 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from video_mcp.media.job_control import JobControlHandle, RenderCancelledError
+
 
 class FFmpegError(RuntimeError):
     """Raised when an ffmpeg or ffprobe invocation fails or times out."""
@@ -166,9 +168,12 @@ class FFmpegRunner:
         timeout: int | None = None,
         progress_cb: Callable[[float], None] | None = None,
         duration_sec: float | None = None,
+        control: JobControlHandle | None = None,
     ) -> None:
         """Execute an ffmpeg command, optionally streaming 0..1 progress via `-progress pipe:1`."""
         self.ensure_binaries()
+        if control is not None:
+            await control.checkpoint()
         effective_timeout = timeout or self.timeout_sec
         if progress_cb is not None and duration_sec and duration_sec > 0:
             cmd = [
@@ -183,11 +188,17 @@ class FFmpegRunner:
                 *args,
             ]
             stderr, rc = await self._exec_with_progress(
-                cmd, timeout=effective_timeout, duration_sec=duration_sec, progress_cb=progress_cb
+                cmd,
+                timeout=effective_timeout,
+                duration_sec=duration_sec,
+                progress_cb=progress_cb,
+                control=control,
             )
         else:
             cmd = [self.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", *args]
-            _, stderr, rc = await self._exec(cmd, timeout=effective_timeout)
+            _, stderr, rc = await self._exec(cmd, timeout=effective_timeout, control=control)
+        if control is not None and control.is_cancelled():
+            raise RenderCancelledError(f"Job '{control.job_id}' was cancelled.")
         if rc != 0:
             raise FFmpegError(f"ffmpeg failed (exit {rc}): {stderr}", rc, stderr)
 
@@ -197,12 +208,15 @@ class FFmpegRunner:
         timeout: int,
         duration_sec: float,
         progress_cb: Callable[[float], None],
+        control: JobControlHandle | None = None,
     ) -> tuple[str, int]:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if control is not None and proc.pid:
+            control.register_pid(proc.pid)
         total_us = max(1.0, duration_sec * 1_000_000.0)
 
         async def _read_progress() -> None:
@@ -229,21 +243,34 @@ class FFmpegRunner:
             proc.kill()
             await proc.wait()
             raise FFmpegError(f"Command timed out after {timeout}s: {cmd[0]}") from exc
+        finally:
+            if control is not None and proc.pid:
+                control.unregister_pid(proc.pid)
         stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
         return stderr[-2000:], rc or 0
 
-    async def _exec(self, cmd: list[str], timeout: int) -> tuple[bytes, str, int]:
+    async def _exec(
+        self,
+        cmd: list[str],
+        timeout: int,
+        control: JobControlHandle | None = None,
+    ) -> tuple[bytes, str, int]:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if control is not None and proc.pid:
+            control.register_pid(proc.pid)
         try:
             stdout, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError as exc:
             proc.kill()
             await proc.wait()
             raise FFmpegError(f"Command timed out after {timeout}s: {cmd[0]}") from exc
+        finally:
+            if control is not None and proc.pid:
+                control.unregister_pid(proc.pid)
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
         return stdout, stderr[-2000:], proc.returncode or 0
 

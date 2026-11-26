@@ -446,8 +446,10 @@ class JobStore:
         return [TranscriptSegment(**item) for item in json.loads(row["segments_json"])]
 
     def recover_stale_rendering_jobs(self) -> list[str]:
-        """Mark any jobs left in `rendering` from a prior crash as `failed`."""
-        stale = self.list_jobs(status=JobStatus.RENDERING, limit=200)
+        """Mark any jobs left in `rendering` or `paused` from a prior crash as `failed`."""
+        stale = self.list_jobs(status=JobStatus.RENDERING, limit=200) + self.list_jobs(
+            status=JobStatus.PAUSED, limit=200
+        )
         recovered_ids: list[str] = []
         for job in stale:
             job.status = JobStatus.FAILED

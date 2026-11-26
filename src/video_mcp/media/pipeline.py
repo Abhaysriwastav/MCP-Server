@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
+from video_mcp.media.job_control import JobControlHandle
 from video_mcp.media.transcriber import Transcriber, generate_srt
 from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.models import (
@@ -148,6 +149,7 @@ class VideoPipeline:
         watermark_sources: dict[str, SourceAsset] | None = None,
         voice_reference_sources: dict[str, SourceAsset] | None = None,
         progress_cb: Callable[[float, str], None] | None = None,
+        control: JobControlHandle | None = None,
     ) -> list[RenderedArtifact]:
         """Run the full editing pipeline for a job and return rendered media + metadata artifacts."""
         if not sources:
@@ -156,6 +158,10 @@ class VideoPipeline:
         def _report(pct: float, stage: str) -> None:
             if progress_cb is not None:
                 progress_cb(min(100.0, max(0.0, pct)), stage)
+
+        async def _checkpoint() -> None:
+            if control is not None:
+                await control.checkpoint()
 
         def _sub_progress(start_pct: float, end_pct: float, stage: str) -> Callable[[float], None]:
             span = end_pct - start_pct
@@ -190,6 +196,7 @@ class VideoPipeline:
         artifacts: list[RenderedArtifact] = []
 
         if pre_caption_ops:
+            await _checkpoint()
             pre_caption_path = job_dir / (
                 "pre_caption.mp4" if (caption_ops or voice_ops) else "master_edited.mp4"
             )
@@ -208,6 +215,7 @@ class VideoPipeline:
 
         cached_segments: list[TranscriptSegment] | None = None
         if caption_ops or (voice_ops and not voice_ops[-1].script_text):
+            await _checkpoint()
             if self.transcriber is None:
                 raise RuntimeError("Transcription requested but Transcriber is not configured.")
             _report(16.0, "Transcribing audio (Whisper)")
@@ -217,6 +225,7 @@ class VideoPipeline:
 
         voiced_path = pre_caption_path
         if voice_ops:
+            await _checkpoint()
             if self.voice_cloner is None:
                 raise RuntimeError("VoiceCloneOp requested but VoiceCloner is not configured.")
             v_op = voice_ops[-1]
@@ -338,6 +347,7 @@ class VideoPipeline:
         step_span = (export_end - export_start) / max(1, len(targets))
 
         for idx, (kind, filename, w, h) in enumerate(targets):
+            await _checkpoint()
             stage_label = f"Exporting {w}x{h}"
             s_pct = export_start + idx * step_span
             e_pct = s_pct + step_span

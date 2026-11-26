@@ -419,6 +419,12 @@ def create_dashboard_server(
                             reviewer=str(payload.get("reviewer") or "dashboard-reviewer"),
                             reason=str(payload.get("reason") or "Rejected via dashboard"),
                         )
+                    elif action == "pause":
+                        res = editing.pause_job(app, job_id)
+                    elif action == "resume":
+                        res = editing.resume_job(app, job_id)
+                    elif action == "cancel":
+                        res = editing.cancel_job(app, job_id)
                     elif action == "retry":
                         res = editing.update_edit_job(app, job_id)
                         threading.Thread(

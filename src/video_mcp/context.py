@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from video_mcp.config import Settings
 from video_mcp.media.ffmpeg_runner import FFmpegRunner
+from video_mcp.media.job_control import RenderController
 from video_mcp.media.pipeline import VideoPipeline
 from video_mcp.media.transcriber import Transcriber
 from video_mcp.media.voice_cloner import VoiceCloner
@@ -24,6 +25,7 @@ class AppContext:
     resolver: SourceResolver
     transcriber: Transcriber
     voice_cloner: VoiceCloner
+    controller: RenderController
     pipeline: VideoPipeline
     publisher: PublishingService
 
@@ -42,6 +44,7 @@ class AppContext:
         resolver = SourceResolver(cfg, runner)
         transcriber = Transcriber(cfg)
         voice_cloner = VoiceCloner(cfg, runner)
+        controller = RenderController()
         pipeline = VideoPipeline(
             runner,
             cfg.workspace_dir,
@@ -57,6 +60,7 @@ class AppContext:
             resolver=resolver,
             transcriber=transcriber,
             voice_cloner=voice_cloner,
+            controller=controller,
             pipeline=pipeline,
             publisher=publisher,
         )

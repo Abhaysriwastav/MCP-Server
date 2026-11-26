@@ -202,6 +202,8 @@ class RenderedArtifact(BaseModel):
 class JobStatus(StrEnum):
     DRAFT = "draft"
     RENDERING = "rendering"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
     READY_FOR_REVIEW = "ready_for_review"
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"

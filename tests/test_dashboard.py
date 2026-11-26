@@ -11,6 +11,8 @@ from video_mcp.config import Settings
 from video_mcp.context import AppContext
 from video_mcp.dashboard.server import _apply_config_update, _serialize_config
 from video_mcp.dashboard.ui import DASHBOARD_HTML
+from video_mcp.models import EditJob, JobStatus
+from video_mcp.tools import editing
 
 
 class TestDashboard(unittest.TestCase):
@@ -59,6 +61,38 @@ class TestDashboard(unittest.TestCase):
                 # Config update also emits an activity event
                 events_after = app.store.list_activity(limit=10)
                 self.assertEqual(events_after[0]["category"], "config")
+            finally:
+                app.close()
+
+    def test_pause_resume_and_cancel_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            cfg = Settings(
+                workspace_dir=tmp_path / "ws",
+                db_path=tmp_path / "ws" / "video.db",
+                allowed_local_roots=[tmp_path],
+                release_dir=tmp_path / "ws" / "releases",
+            )
+            app = AppContext.create(cfg)
+            try:
+                job = EditJob(
+                    job_id="job_ctrl_1",
+                    title="Control Test",
+                    source_ids=["src_1"],
+                    status=JobStatus.RENDERING,
+                )
+                app.store.save_job(job)
+                handle = app.controller.create_handle("job_ctrl_1")
+
+                paused = editing.pause_job(app, "job_ctrl_1")
+                self.assertEqual(paused["job"]["status"], JobStatus.PAUSED.value)
+
+                resumed = editing.resume_job(app, "job_ctrl_1")
+                self.assertEqual(resumed["job"]["status"], JobStatus.RENDERING.value)
+
+                cancelled = editing.cancel_job(app, "job_ctrl_1")
+                self.assertEqual(cancelled["job"]["status"], JobStatus.CANCELLED.value)
+                self.assertTrue(handle.is_cancelled())
             finally:
                 app.close()
 

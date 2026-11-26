@@ -285,6 +285,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .b-draft { background: rgba(148,163,184,0.18); color: var(--muted); }
     .b-rendering { background: rgba(59,130,246,0.22); color: #60a5fa; box-shadow: 0 0 12px rgba(59,130,246,0.25); }
     .b-ready_for_review { background: rgba(168,85,247,0.22); color: #c084fc; }
+    .b-paused { background: rgba(6,182,212,0.22); color: #22d3ee; }
+    .b-cancelled { background: rgba(148,163,184,0.22); color: #cbd5e1; }
     .b-pending_approval { background: rgba(245,158,11,0.22); color: #fbbf24; }
     .b-approved, .b-published { background: rgba(34,197,94,0.22); color: #4ade80; }
     .b-rejected, .b-failed { background: rgba(239,68,68,0.22); color: #f87171; }
@@ -1011,8 +1013,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       tbody.innerHTML = filtered.map(j => {
         const pct = Math.round(j.progress_pct || 0);
         const isRendering = j.status === "rendering";
-        const progressHtml = isRendering
-          ? `<div style="margin-top:6px;min-width:165px;"><div style="height:6px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div class="shimmer-bar" style="height:100%;width:${pct}%;transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:#60a5fa;margin-top:3px;">${pct}% · ${j.progress_stage || "Rendering"}</div><div class="mono" style="font-size:10px;color:var(--muted);">${computeEtaText(j)}</div></div>`
+        const isPaused = j.status === "paused";
+        const rowControls = isRendering
+          ? `<div style="display:flex;gap:6px;margin-top:5px;" onclick="event.stopPropagation()"><button class="btn btn-sec" style="padding:3px 8px;font-size:10px;" onclick="jobAction('${j.job_id}','pause')">Pause</button><button class="btn btn-red" style="padding:3px 8px;font-size:10px;" onclick="jobAction('${j.job_id}','cancel')">Cancel</button></div>`
+          : (isPaused
+              ? `<div style="display:flex;gap:6px;margin-top:5px;" onclick="event.stopPropagation()"><button class="btn btn-green" style="padding:3px 8px;font-size:10px;" onclick="jobAction('${j.job_id}','resume')">Resume</button><button class="btn btn-red" style="padding:3px 8px;font-size:10px;" onclick="jobAction('${j.job_id}','cancel')">Cancel</button></div>`
+              : "");
+        const progressHtml = (isRendering || isPaused)
+          ? `<div style="margin-top:6px;min-width:165px;"><div style="height:6px;background:rgba(15,23,42,0.9);border-radius:999px;overflow:hidden;"><div class="${isRendering ? 'shimmer-bar' : ''}" style="height:100%;width:${pct}%;${isPaused ? 'background:#22d3ee;' : ''}transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:#60a5fa;margin-top:3px;">${pct}% · ${j.progress_stage || (isPaused ? "Paused" : "Rendering")}</div><div class="mono" style="font-size:10px;color:var(--muted);">${isPaused ? "Paused by user" : computeEtaText(j)}</div>${rowControls}</div>`
           : (pct > 0 ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">${pct}%</div>` : "");
         return `
         <tr class="clickable" onclick="selectJob('${j.job_id}')">
@@ -1072,7 +1080,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const hasAutoCaption = (job.operations || []).some(op => op.op === "auto_caption");
       const hasVoiceClone = (job.operations || []).some(op => op.op === "voice_clone");
       const srtArt = (job.artifacts || []).find(a => a.kind === "subtitles_srt");
-      if (["failed", "draft"].includes(job.status)) {
+      if (job.status === "rendering") {
+        actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','pause')">Pause</button>`);
+        actions.push(`<button class="btn btn-red" onclick="jobAction('${job.job_id}','cancel')">Cancel</button>`);
+      }
+      if (job.status === "paused") {
+        actions.push(`<button class="btn btn-green" onclick="jobAction('${job.job_id}','resume')">Resume</button>`);
+        actions.push(`<button class="btn btn-red" onclick="jobAction('${job.job_id}','cancel')">Cancel</button>`);
+      }
+      if (["failed", "cancelled", "draft"].includes(job.status)) {
         actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','retry')">Retry Render</button>`);
       }
       if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasAutoCaption) {

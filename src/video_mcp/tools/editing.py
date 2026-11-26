@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from video_mcp.context import AppContext
+from video_mcp.media.job_control import RenderCancelledError
 from video_mcp.models import EditJob, EditOperation, JobStatus, OutputProfile, SourceAsset, utc_now_iso
 
 _OP_ADAPTER: TypeAdapter[list[EditOperation]] = TypeAdapter(list[EditOperation])
@@ -116,6 +117,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
                 job.eta_sec = 0.0
             app.store.save_job(job)
 
+    handle = app.controller.create_handle(job_id)
     try:
         artifacts = await app.pipeline.render_job(
             job_id=job.job_id,
@@ -125,6 +127,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             watermark_sources=watermark_sources,
             voice_reference_sources=voice_reference_sources,
             progress_cb=_on_progress,
+            control=handle,
         )
         job.artifacts = artifacts
         job.progress_pct = 100.0
@@ -139,7 +142,33 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             details={"artifact_kinds": [a.kind for a in artifacts]},
         )
         return {"job": job.model_dump()}
+    except RenderCancelledError:
+        job.status = JobStatus.CANCELLED
+        job.progress_stage = "Cancelled"
+        job.eta_sec = None
+        job.error = "Cancelled by user"
+        app.store.save_job(job)
+        app.store.log_activity(
+            category="render",
+            level="warning",
+            message=f"Render cancelled for '{job.title}'",
+            job_id=job.job_id,
+        )
+        return {"job": job.model_dump()}
     except Exception as exc:
+        if handle.is_cancelled():
+            job.status = JobStatus.CANCELLED
+            job.progress_stage = "Cancelled"
+            job.eta_sec = None
+            job.error = "Cancelled by user"
+            app.store.save_job(job)
+            app.store.log_activity(
+                category="render",
+                level="warning",
+                message=f"Render cancelled for '{job.title}'",
+                job_id=job.job_id,
+            )
+            return {"job": job.model_dump()}
         job.status = JobStatus.FAILED
         job.error = str(exc)
         app.store.save_job(job)
@@ -150,6 +179,77 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             job_id=job.job_id,
         )
         raise
+    finally:
+        app.controller.remove_handle(job_id)
+
+
+def pause_job(app: AppContext, job_id: str) -> dict[str, Any]:
+    """Pause an actively rendering job."""
+    job = app.store.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Job not found: {job_id}")
+    if job.status != JobStatus.RENDERING:
+        raise ValueError(f"Job '{job_id}' is not rendering (status: '{job.status.value}').")
+    handle = app.controller.get_handle(job_id)
+    if handle is None:
+        raise ValueError(f"No active render handle found for job '{job_id}'.")
+    handle.pause()
+    job.status = JobStatus.PAUSED
+    job.progress_stage = "Paused"
+    app.store.save_job(job)
+    app.store.log_activity(
+        category="render",
+        level="warning",
+        message=f"Paused rendering job '{job.title}' at {job.progress_pct:.0f}%",
+        job_id=job.job_id,
+    )
+    return {"job": job.model_dump()}
+
+
+def resume_job(app: AppContext, job_id: str) -> dict[str, Any]:
+    """Resume a paused rendering job."""
+    job = app.store.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Job not found: {job_id}")
+    if job.status != JobStatus.PAUSED:
+        raise ValueError(f"Job '{job_id}' is not paused (status: '{job.status.value}').")
+    handle = app.controller.get_handle(job_id)
+    if handle is None:
+        raise ValueError(f"No active render handle found for job '{job_id}'.")
+    handle.resume()
+    job.status = JobStatus.RENDERING
+    job.progress_stage = "Resuming"
+    app.store.save_job(job)
+    app.store.log_activity(
+        category="render",
+        message=f"Resumed rendering job '{job.title}' from {job.progress_pct:.0f}%",
+        job_id=job.job_id,
+    )
+    return {"job": job.model_dump()}
+
+
+def cancel_job(app: AppContext, job_id: str) -> dict[str, Any]:
+    """Cancel an active or paused rendering job."""
+    job = app.store.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Job not found: {job_id}")
+    if job.status not in {JobStatus.RENDERING, JobStatus.PAUSED}:
+        raise ValueError(f"Job '{job_id}' cannot be cancelled from '{job.status.value}'.")
+    handle = app.controller.get_handle(job_id)
+    if handle is not None:
+        handle.cancel()
+    job.status = JobStatus.CANCELLED
+    job.progress_stage = "Cancelled"
+    job.eta_sec = None
+    job.error = "Cancelled by user"
+    app.store.save_job(job)
+    app.store.log_activity(
+        category="render",
+        level="warning",
+        message=f"Cancelled job '{job.title}'",
+        job_id=job.job_id,
+    )
+    return {"job": job.model_dump()}
 
 
 def update_edit_job(
@@ -163,7 +263,7 @@ def update_edit_job(
     job = app.store.get_job(job_id)
     if job is None:
         raise ValueError(f"Job not found: {job_id}")
-    if job.status in {JobStatus.RENDERING, JobStatus.PUBLISHED}:
+    if job.status in {JobStatus.RENDERING, JobStatus.PAUSED, JobStatus.PUBLISHED}:
         raise ValueError(f"Cannot modify job '{job_id}' while status is '{job.status.value}'.")
 
     if title is not None:
