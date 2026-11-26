@@ -434,6 +434,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       ).join("");
     }
 
+    function fmtDur(sec) {
+      if (sec === null || sec === undefined || isNaN(sec)) return "";
+      const s = Math.max(0, Math.round(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return m > 0 ? `${m}m ${r}s` : `${r}s`;
+    }
+
+    function computeEtaText(j) {
+      const pct = j.progress_pct || 0;
+      const started = j.render_started_at ? Date.parse(j.render_started_at) : null;
+      const elapsedSec = started ? Math.max(0, (Date.now() - started) / 1000) : null;
+      let etaSec = j.eta_sec;
+      if ((etaSec === null || etaSec === undefined) && elapsedSec !== null && pct >= 2 && pct < 100) {
+        etaSec = elapsedSec * (100 - pct) / pct;
+      }
+      const parts = [];
+      if (elapsedSec !== null) parts.push(`elapsed ${fmtDur(elapsedSec)}`);
+      if (etaSec !== null && etaSec !== undefined && pct >= 2) {
+        parts.push(`ETA ~${fmtDur(etaSec)}`);
+      } else {
+        parts.push("estimating ETA...");
+      }
+      return parts.join(" · ");
+    }
+
     function renderJobs(jobs) {
       document.getElementById("jobs-count").textContent = `${jobs.length} jobs`;
       const tbody = document.getElementById("jobs-tbody");
@@ -445,7 +471,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const pct = Math.round(j.progress_pct || 0);
         const isRendering = j.status === "rendering";
         const progressHtml = isRendering
-          ? `<div style="margin-top:5px;min-width:130px;"><div style="height:6px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--accent);transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:var(--accent);margin-top:2px;">${pct}% · ${j.progress_stage || "Rendering"}</div></div>`
+          ? `<div style="margin-top:5px;min-width:160px;"><div style="height:6px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--accent);transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:var(--accent);margin-top:2px;">${pct}% · ${j.progress_stage || "Rendering"}</div><div class="mono" style="font-size:10px;color:var(--muted);">${computeEtaText(j)}</div></div>`
           : (pct > 0 ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">${pct}%</div>` : "");
         return `
         <tr class="clickable" onclick="selectJob('${j.job_id}')">
@@ -529,7 +555,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           ${job.approval_id ? `<span class="mono">Approval: ${job.approval_id}</span>` : ""}
           ${actions.join("")}
         </div>
-        ${job.status === "rendering" ? `<div style="margin-bottom:12px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>${job.progress_stage || "Rendering"}...</span><span class="mono">${Math.round(job.progress_pct || 0)}%</span></div><div style="height:8px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${Math.round(job.progress_pct || 0)}%;background:var(--accent);transition:width 0.25s;"></div></div></div>` : ""}
+        ${job.status === "rendering" ? `<div style="margin-bottom:12px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>${job.progress_stage || "Rendering"} (${computeEtaText(job)})</span><span class="mono">${Math.round(job.progress_pct || 0)}%</span></div><div style="height:8px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${Math.round(job.progress_pct || 0)}%;background:var(--accent);transition:width 0.25s;"></div></div></div>` : ""}
         ${job.error ? `<div style="color:var(--red);margin-bottom:10px;">Error: ${job.error}</div>` : ""}
         <div><strong>Artifacts (${(job.artifacts || []).length}):</strong></div>
         <ul>

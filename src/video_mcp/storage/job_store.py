@@ -59,6 +59,8 @@ class JobStore:
                     status TEXT NOT NULL,
                     progress_pct REAL NOT NULL DEFAULT 0.0,
                     progress_stage TEXT,
+                    render_started_at TEXT,
+                    eta_sec REAL,
                     artifacts_json TEXT NOT NULL,
                     approval_id TEXT,
                     publish_records_json TEXT NOT NULL,
@@ -107,6 +109,10 @@ class JobStore:
                 )
             if "progress_stage" not in existing_cols:
                 self._conn.execute("ALTER TABLE jobs ADD COLUMN progress_stage TEXT")
+            if "render_started_at" not in existing_cols:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN render_started_at TEXT")
+            if "eta_sec" not in existing_cols:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN eta_sec REAL")
 
     def close(self) -> None:
         with self._lock:
@@ -191,9 +197,10 @@ class JobStore:
                 INSERT INTO jobs (
                     job_id, title, source_ids_json, operations_json,
                     output_profile, status, progress_pct, progress_stage,
+                    render_started_at, eta_sec,
                     artifacts_json, approval_id, publish_records_json, error,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     title=excluded.title,
                     source_ids_json=excluded.source_ids_json,
@@ -202,6 +209,8 @@ class JobStore:
                     status=excluded.status,
                     progress_pct=excluded.progress_pct,
                     progress_stage=excluded.progress_stage,
+                    render_started_at=excluded.render_started_at,
+                    eta_sec=excluded.eta_sec,
                     artifacts_json=excluded.artifacts_json,
                     approval_id=excluded.approval_id,
                     publish_records_json=excluded.publish_records_json,
@@ -217,6 +226,8 @@ class JobStore:
                     job.status.value,
                     job.progress_pct,
                     job.progress_stage,
+                    job.render_started_at,
+                    job.eta_sec,
                     json.dumps([a.model_dump() for a in job.artifacts]),
                     job.approval_id,
                     json.dumps(job.publish_records),
@@ -258,6 +269,8 @@ class JobStore:
             status=JobStatus(row["status"]),
             progress_pct=float(row["progress_pct"] or 0.0),
             progress_stage=row["progress_stage"],
+            render_started_at=row["render_started_at"],
+            eta_sec=float(row["eta_sec"]) if row["eta_sec"] is not None else None,
             artifacts=[RenderedArtifact(**a) for a in json.loads(row["artifacts_json"])],
             approval_id=row["approval_id"],
             publish_records=json.loads(row["publish_records_json"]),

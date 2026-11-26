@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from video_mcp.context import AppContext
-from video_mcp.models import EditJob, EditOperation, JobStatus, OutputProfile, SourceAsset
+from video_mcp.models import EditJob, EditOperation, JobStatus, OutputProfile, SourceAsset, utc_now_iso
 
 _OP_ADAPTER: TypeAdapter[list[EditOperation]] = TypeAdapter(list[EditOperation])
 
@@ -85,6 +86,8 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
     job.status = JobStatus.RENDERING
     job.progress_pct = 0.0
     job.progress_stage = "Starting"
+    job.render_started_at = utc_now_iso()
+    job.eta_sec = None
     job.approval_id = None
     job.artifacts = []
     job.error = None
@@ -96,6 +99,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
         details={"output_profile": job.output_profile.value},
     )
 
+    t0 = time.monotonic()
     last_saved = {"pct": -1.0, "stage": ""}
 
     def _on_progress(pct: float, stage: str) -> None:
@@ -105,6 +109,11 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             last_saved["stage"] = stage
             job.progress_pct = rounded
             job.progress_stage = stage
+            elapsed = max(0.0, time.monotonic() - t0)
+            if rounded >= 2.0 and rounded < 100.0:
+                job.eta_sec = round(elapsed * (100.0 - rounded) / rounded, 1)
+            elif rounded >= 100.0:
+                job.eta_sec = 0.0
             app.store.save_job(job)
 
     try:
@@ -120,6 +129,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
         job.artifacts = artifacts
         job.progress_pct = 100.0
         job.progress_stage = "Complete"
+        job.eta_sec = 0.0
         job.status = JobStatus.READY_FOR_REVIEW
         app.store.save_job(job)
         app.store.log_activity(

@@ -240,6 +240,8 @@ class EditJob(BaseModel):
     status: JobStatus = JobStatus.DRAFT
     progress_pct: float = Field(default=0.0, ge=0.0, le=100.0)
     progress_stage: str | None = None
+    render_started_at: str | None = None
+    eta_sec: float | None = None
     artifacts: list[RenderedArtifact] = Field(default_factory=list)
     approval_id: str | None = None
     publish_records: list[dict[str, Any]] = Field(default_factory=list)
