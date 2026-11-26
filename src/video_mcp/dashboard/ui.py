@@ -356,6 +356,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     .progress-wrap { width: 100%; height: 7px; background: rgba(15,23,42,0.9); border-radius: 999px; overflow: hidden; display: none; }
     .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #06b6d4, #a855f7); transition: width 0.15s; }
+    .analytics-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; margin-bottom: 18px; }
+    @media (max-width: 960px) { .analytics-grid { grid-template-columns: 1fr; } }
+    .wave-bar { transition: height 0.25s ease, y 0.25s ease; }
+    .source-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 11px; border-radius: 10px; font-size: 12px; font-weight: 600;
+      background: rgba(8, 13, 28, 0.72); border: 1px solid var(--border);
+    }
   </style>
 </head>
 <body>
@@ -417,6 +425,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
         <div class="hero-graphics">
+          <!-- Animated AI Audio Waveform -->
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 12px;border-radius:14px;background:rgba(8,13,28,0.65);border:1px solid var(--border);">
+            <svg width="112" height="44" viewBox="0 0 112 44" id="ai-waveform" aria-hidden="true"></svg>
+            <span class="mono" style="font-size:10px;color:var(--cyan);" id="wave-label">AI AUDIO READY</span>
+          </div>
           <!-- Isometric Dual-Format Graphic -->
           <svg width="110" height="84" viewBox="0 0 110 84" fill="none" aria-hidden="true">
             <defs>
@@ -454,6 +467,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="kpis" id="kpis"></div>
+
+      <!-- Visual Analytics & Graphics Row -->
+      <div class="analytics-grid">
+        <div class="card">
+          <div class="card-head">
+            <span>Output Renditions &amp; AI Artifacts</span>
+            <span class="mono" id="art-total-label">0 artifacts</span>
+          </div>
+          <div class="card-body">
+            <svg width="100%" height="135" viewBox="0 0 460 135" id="artifact-bar-chart" aria-label="Artifact breakdown chart"></svg>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span>Source Mix &amp; Render Health</span>
+            <span class="mono" id="health-label">100%</span>
+          </div>
+          <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
+            <svg width="112" height="112" viewBox="0 0 112 112" id="health-gauge">
+              <defs>
+                <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#06b6d4" />
+                  <stop offset="100%" stop-color="#22c55e" />
+                </linearGradient>
+              </defs>
+              <circle cx="56" cy="56" r="44" stroke="rgba(148,163,184,0.14)" stroke-width="10" fill="none" />
+              <circle id="health-arc" cx="56" cy="56" r="44" stroke="url(#gaugeGrad)" stroke-width="10" fill="none" stroke-linecap="round" transform="rotate(-90 56 56)" stroke-dasharray="0 276.46" />
+              <text x="56" y="54" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="800" id="health-pct">100%</text>
+              <text x="56" y="70" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="700">SUCCESS</text>
+            </svg>
+            <div style="display:flex;flex-direction:column;gap:8px;flex:1;min-width:170px;" id="source-mix-pills"></div>
+          </div>
+        </div>
+      </div>
 
       <div class="card" style="margin-bottom: 18px;">
         <div class="card-head">
@@ -640,6 +687,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const data = await res.json();
       renderKPIs(data.summary);
       renderStatusDonut(data.summary);
+      renderAnalyticsGraphics(data.jobs, data.sources || [], data.summary);
       renderJobs(data.jobs);
       renderPipelineFlow(data.jobs);
       renderActivity(data.activity);
@@ -649,6 +697,79 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (job) renderInspector(job);
       }
     }
+
+    function renderAnalyticsGraphics(jobs, sources, summary) {
+      // 1. Artifact 3D Bar Chart
+      const counts = { "16:9": 0, "9:16": 0, "AI Voice": 0, "Captions": 0, "Thumbs": 0 };
+      let totalArtifacts = 0;
+      jobs.forEach(j => {
+        (j.artifacts || []).forEach(a => {
+          totalArtifacts++;
+          if (a.kind === "video_16x9") counts["16:9"]++;
+          else if (a.kind === "video_9x16") counts["9:16"]++;
+          else if (a.kind === "voice_dub") counts["AI Voice"]++;
+          else if (a.kind === "subtitles_srt") counts["Captions"]++;
+          else if (a.kind === "thumbnail") counts["Thumbs"]++;
+        });
+      });
+      document.getElementById("art-total-label").textContent = `${totalArtifacts} artifacts`;
+      const labels = Object.keys(counts);
+      const maxVal = Math.max(1, ...Object.values(counts));
+      const colors = ["#3b82f6", "#a855f7", "#06b6d4", "#f59e0b", "#22c55e"];
+      const barSvg = document.getElementById("artifact-bar-chart");
+      barSvg.innerHTML = labels.map((lbl, idx) => {
+        const val = counts[lbl];
+        const barH = Math.max(6, Math.round((val / maxVal) * 78));
+        const x = 22 + idx * 88;
+        const y = 96 - barH;
+        const col = colors[idx];
+        return `
+          <rect x="${x}" y="18" width="46" height="78" rx="8" fill="rgba(148,163,184,0.06)" />
+          <rect x="${x}" y="${y}" width="46" height="${barH}" rx="8" fill="${col}" opacity="0.88" />
+          <rect x="${x + 4}" y="${y + 2}" width="38" height="4" rx="2" fill="#ffffff" opacity="0.28" />
+          <text x="${x + 23}" y="${y - 5}" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="700">${val}</text>
+          <text x="${x + 23}" y="116" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">${lbl}</text>
+        `;
+      }).join("");
+
+      // 2. Render Health Radial Gauge
+      const done = (summary.ready_for_review || 0) + (summary.pending_approval || 0) + (summary.approved || 0) + (summary.published || 0);
+      const failed = (summary.failed || 0) + (summary.rejected || 0);
+      const pct = (done + failed) > 0 ? Math.round((done / (done + failed)) * 100) : 100;
+      const circ = 2 * Math.PI * 44;
+      const arcLen = (pct / 100) * circ;
+      document.getElementById("health-arc").setAttribute("stroke-dasharray", `${arcLen} ${circ - arcLen}`);
+      document.getElementById("health-pct").textContent = `${pct}%`;
+      document.getElementById("health-label").textContent = `${done} ok / ${failed} err`;
+
+      // 3. Source Mix Pills
+      const srcCounts = { local: 0, youtube: 0, http: 0, s3: 0 };
+      sources.forEach(s => { srcCounts[s.kind] = (srcCounts[s.kind] || 0) + 1; });
+      document.getElementById("source-mix-pills").innerHTML = `
+        <div class="source-pill"><span style="color:#60a5fa">●</span><span>Local / Device</span><span class="mono" style="margin-left:auto">${srcCounts.local}</span></div>
+        <div class="source-pill"><span style="color:#f87171">▶</span><span>YouTube Links</span><span class="mono" style="margin-left:auto">${srcCounts.youtube}</span></div>
+        <div class="source-pill"><span style="color:#22d3ee">☁</span><span>HTTP / S3</span><span class="mono" style="margin-left:auto">${srcCounts.http + srcCounts.s3}</span></div>
+      `;
+    }
+
+    // Animated AI Waveform SVG
+    function tickWaveform() {
+      const svg = document.getElementById("ai-waveform");
+      if (!svg) return;
+      const bars = 18;
+      const active = hasActiveRender;
+      document.getElementById("wave-label").textContent = active ? "SYNTHESIZING" : "AI AUDIO READY";
+      let html = "";
+      for (let i = 0; i < bars; i++) {
+        const h = active ? (8 + Math.floor(Math.random() * 28)) : (6 + Math.floor(Math.sin(Date.now() / 450 + i * 0.6) * 5 + 6));
+        const y = Math.round((44 - h) / 2);
+        const col = i % 3 === 0 ? "#3b82f6" : (i % 3 === 1 ? "#06b6d4" : "#a855f7");
+        html += `<rect class="wave-bar" x="${2 + i * 6}" y="${y}" width="3.5" height="${h}" rx="2" fill="${col}" />`;
+      }
+      svg.innerHTML = html;
+    }
+    setInterval(tickWaveform, 260);
+    tickWaveform();
 
     function renderStatusDonut(s) {
       const total = s.total_jobs || 0;
