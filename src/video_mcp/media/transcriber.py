@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any
@@ -112,14 +114,50 @@ class Transcriber:
             )
             return self._model
 
+    def _decode_audio_input(self, media_path: Path) -> Any:
+        """Decode audio to 16kHz mono float32 via ffmpeg to avoid PyAV metadata_errors issues."""
+        ffmpeg_bin = self.settings.ffmpeg_bin
+        if shutil.which(ffmpeg_bin) is None and not Path(ffmpeg_bin).is_file():
+            return str(media_path)
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except ImportError:
+            return str(media_path)
+
+        proc = subprocess.run(
+            [
+                ffmpeg_bin,
+                "-nostdin",
+                "-threads",
+                "0",
+                "-i",
+                str(media_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "f32le",
+                "-",
+            ],
+            capture_output=True,
+            timeout=min(self.settings.ffmpeg_timeout_sec, 300),
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return str(media_path)
+        return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
     def _transcribe_sync(
         self, media_path: Path, word_timestamps: bool = True
     ) -> list[TranscriptSegment]:
         if not media_path.is_file():
             raise TranscriberError(f"Media file not found for transcription: {media_path}")
         model = self._get_model()
+        audio_input = self._decode_audio_input(media_path)
         raw_segments, _info = model.transcribe(
-            str(media_path),
+            audio_input,
             word_timestamps=word_timestamps,
             vad_filter=True,
         )
