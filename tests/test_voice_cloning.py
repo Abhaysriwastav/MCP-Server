@@ -186,6 +186,31 @@ class TestVoiceCloning(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_cuda_auto_detection_for_whisper_torch_and_nvenc(self) -> None:
+        from video_mcp.media.ffmpeg_runner import FFmpegRunner
+        from video_mcp.media.transcriber import _resolve_whisper_device
+        from video_mcp.media.voice_cloner import _resolve_torch_device
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = types.SimpleNamespace(is_available=lambda: True)  # type: ignore[attr-defined]
+        fake_ct2 = types.ModuleType("ctranslate2")
+        fake_ct2.get_cuda_device_count = lambda: 1  # type: ignore[attr-defined]
+
+        with patch.dict(sys.modules, {"torch": fake_torch, "ctranslate2": fake_ct2}):
+            self.assertEqual(_resolve_whisper_device("auto", "auto"), ("cuda", "float16"))
+            self.assertEqual(_resolve_torch_device("auto"), "cuda:0")
+
+        fake_torch_cpu = types.ModuleType("torch")
+        fake_torch_cpu.cuda = types.SimpleNamespace(is_available=lambda: False)  # type: ignore[attr-defined]
+        fake_ct2_cpu = types.ModuleType("ctranslate2")
+        fake_ct2_cpu.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
+
+        with patch.dict(sys.modules, {"torch": fake_torch_cpu, "ctranslate2": fake_ct2_cpu}):
+            self.assertEqual(_resolve_whisper_device("auto", "auto"), ("cpu", "int8"))
+            self.assertEqual(_resolve_torch_device("auto"), "cpu")
+            runner = FFmpegRunner(hwaccel="auto")
+            self.assertEqual(runner.video_encoder_args(), ["-c:v", "libx264", "-preset", "medium", "-crf", "18"])
+
     @unittest.skipUnless(HAS_FFMPEG, "ffmpeg and ffprobe required for end-to-end voice dub test")
     def test_trim_voice_clone_and_auto_caption_pipeline(self) -> None:
         async def _run() -> None:

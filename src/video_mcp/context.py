@@ -37,6 +37,7 @@ class AppContext:
             ffmpeg_bin=cfg.ffmpeg_bin,
             ffprobe_bin=cfg.ffprobe_bin,
             timeout_sec=cfg.ffmpeg_timeout_sec,
+            hwaccel=cfg.ffmpeg_hwaccel,
         )
         resolver = SourceResolver(cfg, runner)
         transcriber = Transcriber(cfg)

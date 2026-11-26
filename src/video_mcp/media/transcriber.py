@@ -87,6 +87,30 @@ def generate_srt(
     return output_srt_path
 
 
+def _resolve_whisper_device(device: str, compute_type: str) -> tuple[str, str]:
+    """Resolve 'auto' to CUDA + float16 when available, else CPU + int8."""
+    resolved_dev = device.strip().lower()
+    if resolved_dev == "auto":
+        cuda_ok = False
+        try:
+            import ctranslate2  # type: ignore[import-not-found]
+
+            cuda_ok = ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            try:
+                import torch  # type: ignore[import-not-found]
+
+                cuda_ok = bool(torch.cuda.is_available())
+            except Exception:
+                cuda_ok = False
+        resolved_dev = "cuda" if cuda_ok else "cpu"
+
+    resolved_compute = compute_type.strip().lower()
+    if resolved_compute == "auto":
+        resolved_compute = "float16" if resolved_dev == "cuda" else "int8"
+    return resolved_dev, resolved_compute
+
+
 class Transcriber:
     """Thread-safe, lazy-cached faster-whisper transcriber."""
 
@@ -107,10 +131,14 @@ class Transcriber:
                     "Install with: pip install 'video-automation-mcp[captions]'"
                 ) from exc
 
+            device, compute_type = _resolve_whisper_device(
+                self.settings.whisper_device,
+                self.settings.whisper_compute_type,
+            )
             self._model = WhisperModel(
                 self.settings.whisper_model,
-                device=self.settings.whisper_device,
-                compute_type=self.settings.whisper_compute_type,
+                device=device,
+                compute_type=compute_type,
             )
             return self._model
 

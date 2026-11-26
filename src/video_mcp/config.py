@@ -40,6 +40,7 @@ class Settings(BaseModel):
     ffmpeg_bin: str = Field(default="ffmpeg")
     ffprobe_bin: str = Field(default="ffprobe")
     ffmpeg_timeout_sec: int = Field(default=600, ge=10)
+    ffmpeg_hwaccel: Literal["auto", "cuda", "cpu"] = Field(default="auto")
 
     max_download_mb: int = Field(default=1024, ge=1)
     max_download_bytes: int | None = Field(default=None, ge=1)
@@ -48,15 +49,15 @@ class Settings(BaseModel):
 
     # YouTube & Whisper transcription / captioning
     whisper_model: str = Field(default="base")
-    whisper_device: str = Field(default="cpu")
-    whisper_compute_type: str = Field(default="int8")
+    whisper_device: str = Field(default="auto")
+    whisper_compute_type: str = Field(default="auto")
     youtube_max_duration_sec: int = Field(default=7200, ge=1)
     subtitle_max_words_per_line: int = Field(default=6, ge=1, le=20)
 
     # AI Voice Cloning
     voice_provider: Literal["omnivoice", "coqui", "elevenlabs"] = Field(default="omnivoice")
     omnivoice_model: str = Field(default="k2-fsa/OmniVoice")
-    omnivoice_device: str = Field(default="cpu")
+    omnivoice_device: str = Field(default="auto")
     coqui_model: str = Field(default="tts_models/multilingual/multi-dataset/xtts_v2")
     elevenlabs_api_key: str | None = Field(default=None)
     elevenlabs_voice_id: str | None = Field(default=None)
@@ -94,6 +95,11 @@ class Settings(BaseModel):
             ffmpeg_bin=os.getenv("VIDEO_MCP_FFMPEG_BIN", "ffmpeg"),
             ffprobe_bin=os.getenv("VIDEO_MCP_FFPROBE_BIN", "ffprobe"),
             ffmpeg_timeout_sec=_env_int("VIDEO_MCP_FFMPEG_TIMEOUT_SEC", 600),
+            ffmpeg_hwaccel=(
+                os.getenv("VIDEO_MCP_FFMPEG_HWACCEL", "auto").strip().lower()  # type: ignore[arg-type]
+                if os.getenv("VIDEO_MCP_FFMPEG_HWACCEL", "auto").strip().lower() in {"auto", "cuda", "cpu"}
+                else "auto"
+            ),
             max_download_mb=_env_int("VIDEO_MCP_MAX_DOWNLOAD_MB", 1024),
             max_download_bytes=(
                 int(os.environ["VIDEO_MCP_MAX_DOWNLOAD_BYTES"])
@@ -103,13 +109,13 @@ class Settings(BaseModel):
             download_timeout_sec=_env_int("VIDEO_MCP_DOWNLOAD_TIMEOUT_SEC", 120),
             allow_private_urls=_env_bool("VIDEO_MCP_ALLOW_PRIVATE_URLS", False),
             whisper_model=os.getenv("VIDEO_MCP_WHISPER_MODEL", "base"),
-            whisper_device=os.getenv("VIDEO_MCP_WHISPER_DEVICE", "cpu"),
-            whisper_compute_type=os.getenv("VIDEO_MCP_WHISPER_COMPUTE_TYPE", "int8"),
+            whisper_device=os.getenv("VIDEO_MCP_WHISPER_DEVICE", "auto"),
+            whisper_compute_type=os.getenv("VIDEO_MCP_WHISPER_COMPUTE_TYPE", "auto"),
             youtube_max_duration_sec=_env_int("VIDEO_MCP_YOUTUBE_MAX_DURATION_SEC", 7200),
             subtitle_max_words_per_line=_env_int("VIDEO_MCP_SUBTITLE_MAX_WORDS_PER_LINE", 6),
             voice_provider=voice_provider,
             omnivoice_model=os.getenv("VIDEO_MCP_OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),
-            omnivoice_device=os.getenv("VIDEO_MCP_OMNIVOICE_DEVICE", "cpu"),
+            omnivoice_device=os.getenv("VIDEO_MCP_OMNIVOICE_DEVICE", "auto"),
             coqui_model=os.getenv(
                 "VIDEO_MCP_COQUI_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2"
             ),

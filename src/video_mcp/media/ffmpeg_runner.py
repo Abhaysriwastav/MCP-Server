@@ -38,10 +38,49 @@ class FFmpegRunner:
         ffmpeg_bin: str = "ffmpeg",
         ffprobe_bin: str = "ffprobe",
         timeout_sec: int = 600,
+        hwaccel: str = "auto",
     ) -> None:
         self.ffmpeg_bin = ffmpeg_bin
         self.ffprobe_bin = ffprobe_bin
         self.timeout_sec = timeout_sec
+        self.hwaccel = hwaccel
+        self._nvenc_available: bool | None = None
+
+    def has_nvenc(self) -> bool:
+        """Return True if CUDA + FFmpeg `h264_nvenc` encoder are available."""
+        if self._nvenc_available is not None:
+            return self._nvenc_available
+        if self.hwaccel == "cpu":
+            self._nvenc_available = False
+            return False
+        cuda_ok = False
+        try:
+            import torch  # type: ignore[import-not-found]
+
+            cuda_ok = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_ok = self.hwaccel == "cuda"
+        if not cuda_ok and self.hwaccel != "cuda":
+            self._nvenc_available = False
+            return False
+        try:
+            proc = subprocess.run(
+                [self.ffmpeg_bin, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            self._nvenc_available = any(" h264_nvenc " in ln for ln in proc.stdout.splitlines())
+        except Exception:
+            self._nvenc_available = False
+        return self._nvenc_available
+
+    def video_encoder_args(self, preset: str = "medium", crf: int = 18) -> list[str]:
+        """Return NVENC GPU encoder args when CUDA is available, else libx264 CPU args."""
+        if self.has_nvenc():
+            return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(crf)]
+        return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]
 
     def ensure_binaries(self) -> None:
         """Verify that both ffmpeg and ffprobe are executable on PATH or absolute path."""

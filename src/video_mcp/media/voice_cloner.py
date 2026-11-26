@@ -17,6 +17,19 @@ class VoiceCloneError(RuntimeError):
     """Raised when voice cloning fails or required TTS dependencies/credentials are missing."""
 
 
+def _resolve_torch_device(device: str) -> str:
+    """Resolve 'auto' to 'cuda:0' when CUDA is available, else 'cpu'."""
+    raw = device.strip()
+    if raw.lower() == "auto":
+        try:
+            import torch  # type: ignore[import-not-found]
+
+            return "cuda:0" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    return raw
+
+
 class VoiceCloner:
     """Thread-safe, lazy-cached AI voice cloning engine."""
 
@@ -40,7 +53,7 @@ class VoiceCloner:
                     "pip install omnivoice (or set VIDEO_MCP_VOICE_PROVIDER=coqui)."
                 ) from exc
 
-            device = self.settings.omnivoice_device
+            device = _resolve_torch_device(self.settings.omnivoice_device)
             dtype = torch.float16 if device.startswith("cuda") else torch.float32
             self._omnivoice = OmniVoice.from_pretrained(
                 self.settings.omnivoice_model,
@@ -63,7 +76,10 @@ class VoiceCloner:
                     "(or set VIDEO_MCP_VOICE_PROVIDER=elevenlabs)."
                 ) from exc
 
-            self._tts = TTS(self.settings.coqui_model)
+            tts = TTS(self.settings.coqui_model)
+            if _resolve_torch_device("auto").startswith("cuda") and hasattr(tts, "to"):
+                tts = tts.to("cuda")
+            self._tts = tts
             return self._tts
 
     async def extract_reference_sample(
