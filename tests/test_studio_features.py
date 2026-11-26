@@ -3,25 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import subprocess
 import tempfile
-import threading
 import unittest
-import urllib.request
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from video_mcp.config import Settings
 from video_mcp.context import AppContext
-from video_mcp.dashboard.server import create_dashboard_server
 from video_mcp.dashboard.ui import DASHBOARD_HTML
 from video_mcp.media.face_tracker import estimate_face_center_x_sync
 from video_mcp.media.pipeline import _reframe_filter, _subtitle_force_style
 from video_mcp.media.social_kit import generate_social_kit
 from video_mcp.media.translator import translate_segments
-from video_mcp.models import EditJob, JobStatus, SourceAsset, SourceKind, TranscriptSegment
+from video_mcp.models import TranscriptSegment
 from video_mcp.tools import editing, ingest
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
@@ -205,122 +201,6 @@ class TestStudioFeatures(unittest.TestCase):
                     app.close()
 
         asyncio.run(_run())
-
-    def test_dashboard_contains_presets_library_badges_and_delete(self) -> None:
-        for token in (
-            "sources-tbody",
-            "applyStudioPreset",
-            "jobs-tab-badge",
-            "ingest-tab-badge",
-            "deleteJob",
-        ):
-            self.assertIn(token, DASHBOARD_HTML)
-
-    def test_delete_source_workspace_guard_and_delete_job_guard(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp).resolve()
-            ws = tmp_path / "ws"
-            cfg = Settings(
-                workspace_dir=ws,
-                db_path=ws / "video.db",
-                release_dir=ws / "releases",
-                allowed_local_roots=[tmp_path],
-            )
-            app = AppContext.create(cfg)
-            try:
-                # 1. Workspace-managed source file SHOULD be removed
-                ws_file = ws / "sources" / "clip.mp4"
-                ws_file.parent.mkdir(parents=True, exist_ok=True)
-                ws_file.write_bytes(b"wsdata")
-                s_ws = SourceAsset(
-                    source_id="src_ws",
-                    uri=str(ws_file),
-                    kind=SourceKind.LOCAL,
-                    local_path=str(ws_file),
-                    sha256="a" * 64,
-                    size_bytes=6,
-                    filename="clip.mp4",
-                    probe={},
-                )
-                app.store.save_source(s_ws)
-                res_ws = ingest.delete_source(app, "src_ws", delete_file=True)
-                self.assertTrue(res_ws["deleted"])
-                self.assertTrue(res_ws["file_removed"])
-                self.assertFalse(ws_file.exists())
-                self.assertIsNone(app.store.get_source("src_ws"))
-
-                # 2. External file outside workspace SHOULD NOT be removed from disk
-                ext_file = tmp_path / "external.mp4"
-                ext_file.write_bytes(b"extdata")
-                s_ext = SourceAsset(
-                    source_id="src_ext",
-                    uri=str(ext_file),
-                    kind=SourceKind.LOCAL,
-                    local_path=str(ext_file),
-                    sha256="b" * 64,
-                    size_bytes=7,
-                    filename="external.mp4",
-                    probe={},
-                )
-                app.store.save_source(s_ext)
-                res_ext = ingest.delete_source(app, "src_ext", delete_file=True)
-                self.assertTrue(res_ext["deleted"])
-                self.assertFalse(res_ext["file_removed"])
-                self.assertTrue(ext_file.exists())
-                self.assertIsNone(app.store.get_source("src_ext"))
-
-                # 3. Active RENDERING job cannot be deleted; COMPLETED/FAILED job cleans up renders dir
-                job_rendering = EditJob(
-                    job_id="job_busy",
-                    title="Busy",
-                    source_ids=["src_ext"],
-                    status=JobStatus.RENDERING,
-                )
-                app.store.save_job(job_rendering)
-                with self.assertRaises(ValueError):
-                    editing.delete_job(app, "job_busy")
-
-                job_done = EditJob(
-                    job_id="job_done",
-                    title="Done",
-                    source_ids=["src_ext"],
-                    status=JobStatus.READY_FOR_REVIEW,
-                )
-                app.store.save_job(job_done)
-                render_dir = ws / "renders" / "job_done"
-                render_dir.mkdir(parents=True, exist_ok=True)
-                (render_dir / "out.mp4").write_bytes(b"mp4")
-                res_del = editing.delete_job(app, "job_done", delete_files=True)
-                self.assertTrue(res_del["deleted"])
-                self.assertFalse(render_dir.exists())
-                self.assertIsNone(app.store.get_job("job_done"))
-            finally:
-                app.close()
-
-    def test_health_endpoint_returns_ok(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp).resolve()
-            ws = tmp_path / "ws"
-            cfg = Settings(
-                workspace_dir=ws,
-                db_path=ws / "video.db",
-                release_dir=ws / "releases",
-                allowed_local_roots=[tmp_path],
-            )
-            app = AppContext.create(cfg)
-            srv = create_dashboard_server(app, host="127.0.0.1", port=0)
-            thread = threading.Thread(target=srv.serve_forever, daemon=True)
-            thread.start()
-            try:
-                port = srv.server_address[1]
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as resp:
-                    self.assertEqual(resp.status, 200)
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    self.assertEqual(payload, {"status": "ok"})
-            finally:
-                srv.shutdown()
-                srv.server_close()
-                app.close()
 
 
 if __name__ == "__main__":

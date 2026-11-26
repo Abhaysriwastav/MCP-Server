@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -309,30 +308,6 @@ def list_jobs(app: AppContext, status: str | None = None, limit: int = 50) -> di
     parsed_status = JobStatus(status) if status else None
     jobs = app.store.list_jobs(status=parsed_status, limit=limit)
     return {"count": len(jobs), "jobs": [j.model_dump() for j in jobs]}
-
-
-def delete_job(app: AppContext, job_id: str, delete_files: bool = True) -> dict[str, Any]:
-    """Delete an edit job from the store and optionally remove its rendered workspace files."""
-    job = app.store.get_job(job_id)
-    if job is None:
-        raise ValueError(f"Job not found: {job_id}")
-    if job.status in {JobStatus.RENDERING, JobStatus.PAUSED}:
-        raise ValueError(
-            f"Cannot delete job '{job_id}' while status is '{job.status.value}'. Cancel it first."
-        )
-
-    if delete_files:
-        shutil.rmtree(app.settings.workspace_dir / "renders" / job_id, ignore_errors=True)
-        (app.settings.workspace_dir / "renders" / f"{job_id}_bundle.zip").unlink(missing_ok=True)
-        shutil.rmtree(app.settings.workspace_dir / "thumbnails" / job_id, ignore_errors=True)
-
-    app.store.delete_job(job_id)
-    app.store.log_activity(
-        category="job",
-        message=f"Deleted job '{job.title}'",
-        job_id=job_id,
-    )
-    return {"deleted": True, "job_id": job_id}
 
 
 async def generate_thumbnail(

@@ -171,11 +171,6 @@ class JobStore:
             ).fetchall()
         return [self._row_to_source(r) for r in rows]
 
-    def delete_source(self, source_id: str) -> bool:
-        with self._lock, self._conn:
-            cur = self._conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
-            return cur.rowcount > 0
-
     @staticmethod
     def _row_to_source(row: sqlite3.Row) -> SourceAsset:
         return SourceAsset(
@@ -262,11 +257,6 @@ class JobStore:
                     "SELECT * FROM jobs ORDER BY updated_at DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [self._row_to_job(r) for r in rows]
-
-    def delete_job(self, job_id: str) -> bool:
-        with self._lock, self._conn:
-            cur = self._conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-            return cur.rowcount > 0
 
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> EditJob:

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,7 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIDEO_MCP_FFMPEG_HWACCEL=auto
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg git ca-certificates libglib2.0-0 \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git ca-certificates libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv
 
@@ -28,14 +28,11 @@ COPY pyproject.toml requirements.txt README.md ./
 COPY src ./src
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu124 \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/workspace
 
 EXPOSE 8080 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)" || exit 1
 
 CMD ["video-automation-dashboard"]
