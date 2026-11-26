@@ -175,6 +175,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <input type="text" id="ingest-url" placeholder="Paste YouTube URL (youtube.com / youtu.be / shorts) or HTTP/S3 URL..." style="flex:1;" />
               <button class="btn btn-sec" id="ingest-url-btn" onclick="ingestUrl()">Ingest YouTube / URL</button>
             </div>
+            <div style="width:100%;display:flex;gap:10px;align-items:center;">
+              <input type="text" id="voice-script-input" placeholder="Optional AI Voice Script (leave blank to auto-transcribe &amp; re-voice spoken audio)" style="flex:1;" />
+            </div>
             <div class="progress-wrap" id="upload-progress-wrap">
               <div class="progress-bar" id="upload-progress-bar"></div>
             </div>
@@ -393,8 +396,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const profile = document.getElementById("upload-profile").value;
       const captionChecked = document.getElementById("upload-autocaption").checked;
       const voiceChecked = document.getElementById("upload-voiceclone").checked;
+      const scriptText = document.getElementById("voice-script-input").value.trim() || null;
       const ops = [{ op: "trim", start_sec: startSec, end_sec: endSec }];
-      if (voiceChecked) ops.push({ op: "voice_clone" });
+      if (voiceChecked) ops.push({ op: "voice_clone", script_text: scriptText });
       if (captionChecked) ops.push({ op: "auto_caption" });
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -547,6 +551,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const reason = prompt("Rejection reason:", "Needs adjustment");
         if (!reviewer || !reason) return;
         body = { reviewer, reason };
+      } else if (action === "voice_clone") {
+        const script = prompt("Optional custom AI voice script (leave blank to auto-transcribe spoken dialogue):", "");
+        if (script === null) return;
+        body = { script_text: script.trim() || null };
       }
       const res = await fetch(`/api/jobs/${jobId}/${action}`, {
         method: "POST",
@@ -665,7 +673,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const title = document.getElementById("upload-title").value.trim() || ytTitle || src.filename;
       const profile = document.getElementById("upload-profile").value;
       const ops = [];
-      if (document.getElementById("upload-voiceclone").checked) ops.push({ op: "voice_clone" });
+      const scriptText = document.getElementById("voice-script-input").value.trim() || null;
+      if (document.getElementById("upload-voiceclone").checked) ops.push({ op: "voice_clone", script_text: scriptText });
       if (document.getElementById("upload-autocaption").checked) ops.push({ op: "auto_caption" });
       const jobRes = await fetch("/api/jobs", {
         method: "POST",

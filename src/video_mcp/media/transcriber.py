@@ -189,8 +189,17 @@ class Transcriber:
             word_timestamps=word_timestamps,
             vad_filter=True,
         )
+        segments_list = list(raw_segments)
+        if not segments_list:
+            # Retry without VAD in case quiet speech or game audio was filtered out
+            raw_segments, _info = model.transcribe(
+                audio_input,
+                word_timestamps=word_timestamps,
+                vad_filter=False,
+            )
+            segments_list = list(raw_segments)
         results: list[TranscriptSegment] = []
-        for seg in raw_segments:
+        for seg in segments_list:
             words: list[TranscriptWord] = []
             for w in getattr(seg, "words", None) or []:
                 words.append(
