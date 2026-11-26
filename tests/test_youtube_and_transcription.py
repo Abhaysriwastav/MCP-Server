@@ -310,23 +310,7 @@ class TestYouTubeAndTranscription(unittest.TestCase):
                         "transcribe_media",
                         new=AsyncMock(return_value=mock_segments),
                     ) as mock_transcribe:
-                        if app.runner.has_filter("subtitles"):
-                            rendered = await editing.render_edit_job(app, job_id)
-                        else:
-                            async def _fake_burn(
-                                input_path: Path,
-                                output_path: Path,
-                                srt_path: Path,
-                                has_audio: bool,
-                                font_size: int = 20,
-                                margin_v: int = 55,
-                            ) -> None:
-                                shutil.copy2(input_path, output_path)
-
-                            with patch.object(
-                                app.pipeline, "_burn_subtitles_only", side_effect=_fake_burn
-                            ):
-                                rendered = await editing.render_edit_job(app, job_id)
+                        rendered = await editing.render_edit_job(app, job_id)
                         # Verify transcription ran on pre_caption.mp4 (the trimmed clip), not raw sample.mp4
                         called_path = mock_transcribe.call_args.args[0]
                         self.assertEqual(called_path.name, "pre_caption.mp4")

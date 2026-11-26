@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,32 @@ def _escape_filter_path(path: Path) -> str:
         .replace("[", "\\[")
         .replace("]", "\\]")
     )
+
+
+_SRT_TS_RE = re.compile(
+    r"(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})"
+)
+
+
+def _parse_srt_cues(srt_text: str) -> list[tuple[float, float, str]]:
+    """Parse UTF-8 SRT text into `(start_sec, end_sec, text)` tuples."""
+    cues: list[tuple[float, float, str]] = []
+    for block in re.split(r"\r?\n\s*\r?\n", srt_text.strip()):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            continue
+        ts_line = lines[1] if _SRT_TS_RE.search(lines[1]) else lines[0]
+        match = _SRT_TS_RE.search(ts_line)
+        if not match:
+            continue
+        h1, m1, s1, ms1, h2, m2, s2, ms2 = (int(x) for x in match.groups())
+        start = h1 * 3600 + m1 * 60 + s1 + ms1 / 1000.0
+        end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000.0
+        text_lines = lines[2:] if ts_line == lines[1] else lines[1:]
+        text = " ".join(text_lines).strip()
+        if text:
+            cues.append((start, max(end, start + 0.1), text))
+    return cues
 
 
 def _subtitle_force_style(font_size: int = 20, margin_v: int = 55) -> str:
@@ -495,27 +523,151 @@ class VideoPipeline:
         font_size: int = 20,
         margin_v: int = 55,
     ) -> None:
-        style = _subtitle_force_style(font_size=font_size, margin_v=margin_v)
-        vf = f"subtitles=filename='{_escape_filter_path(srt_path)}':force_style='{style}'"
-        args = [
-            "-i",
-            str(input_path),
-            "-vf",
-            vf,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            *(["-c:a", "copy"] if has_audio else ["-an"]),
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ]
-        await self.runner.run_ffmpeg(args)
+        if self.runner.has_filter("subtitles"):
+            style = _subtitle_force_style(font_size=font_size, margin_v=margin_v)
+            vf = f"subtitles=filename='{_escape_filter_path(srt_path)}':force_style='{style}'"
+            args = [
+                "-i",
+                str(input_path),
+                "-vf",
+                vf,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                *(["-c:a", "copy"] if has_audio else ["-an"]),
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+            await self.runner.run_ffmpeg(args)
+            return
+
+        await self._burn_srt_with_pillow_overlay(
+            input_path=input_path,
+            output_path=output_path,
+            srt_path=srt_path,
+            has_audio=has_audio,
+            margin_v=margin_v,
+        )
+
+    async def _burn_srt_with_pillow_overlay(
+        self,
+        input_path: Path,
+        output_path: Path,
+        srt_path: Path,
+        has_audio: bool,
+        margin_v: int = 55,
+    ) -> None:
+        """Render SRT cues as transparent PNGs with Pillow and overlay via FFmpeg."""
+        cues = _parse_srt_cues(srt_path.read_text(encoding="utf-8"))
+        if not cues:
+            shutil.copy2(input_path, output_path)
+            return
+
+        from PIL import Image, ImageDraw, ImageFont
+
+        probe = await self.runner.probe(input_path)
+        video_info = probe.get("video") or {}
+        vid_h = int(video_info.get("height") or 1080)
+        vid_w = int(video_info.get("width") or 1920)
+        px_size = max(20, int(vid_h * 0.045))
+
+        font: Any = None
+        for font_candidate in (
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ):
+            if Path(font_candidate).is_file():
+                try:
+                    font = ImageFont.truetype(font_candidate, px_size)
+                    break
+                except Exception:
+                    continue
+        if font is None:
+            font = ImageFont.load_default()
+
+        cue_dir = output_path.parent / "caption_pngs"
+        cue_dir.mkdir(parents=True, exist_ok=True)
+        cue_pngs: list[tuple[float, float, Path]] = []
+
+        for idx, (start, end, text) in enumerate(cues):
+            dummy = Image.new("RGBA", (10, 10))
+            d_draw = ImageDraw.Draw(dummy)
+            bbox = d_draw.textbbox((0, 0), text, font=font, stroke_width=2)
+            tw = max(1, bbox[2] - bbox[0])
+            th = max(1, bbox[3] - bbox[1])
+            pad_x = max(16, px_size // 2)
+            pad_y = max(10, px_size // 3)
+            img_w = min(vid_w - 20, tw + pad_x * 2)
+            img_h = th + pad_y * 2
+
+            img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            draw.rounded_rectangle(
+                [(0, 0), (img_w - 1, img_h - 1)],
+                radius=max(8, px_size // 3),
+                fill=(0, 0, 0, 175),
+            )
+            tx = max(pad_x, (img_w - tw) // 2) - bbox[0]
+            ty = pad_y - bbox[1]
+            draw.text(
+                (tx, ty),
+                text,
+                font=font,
+                fill=(255, 255, 255, 255),
+                stroke_width=2,
+                stroke_fill=(0, 0, 0, 255),
+            )
+            png_path = cue_dir / f"cue_{idx:04d}.png"
+            img.save(png_path, format="PNG")
+            cue_pngs.append((start, end, png_path))
+
+        # Overlay cues in batches of 25 to keep FFmpeg filtergraph compact
+        current_in = input_path
+        batch_size = 25
+        for b_idx in range(0, len(cue_pngs), batch_size):
+            batch = cue_pngs[b_idx : b_idx + batch_size]
+            is_last = b_idx + batch_size >= len(cue_pngs)
+            batch_out = output_path if is_last else (cue_dir / f"batch_{b_idx}.mp4")
+
+            inputs = ["-i", str(current_in)]
+            fc_parts: list[str] = []
+            cur_v = "0:v"
+            for i, (start, end, png_path) in enumerate(batch, start=1):
+                inputs.extend(["-i", str(png_path)])
+                next_v = f"v{i}"
+                fc_parts.append(
+                    f"[{cur_v}][{i}:v]overlay=(W-w)/2:H-h-{margin_v}:enable='between(t,{start:.3f},{end:.3f})'[{next_v}]"
+                )
+                cur_v = next_v
+
+            args = [
+                *inputs,
+                "-filter_complex",
+                ";".join(fc_parts),
+                "-map",
+                f"[{cur_v}]",
+                *(["-map", "0:a?", "-c:a", "copy"] if has_audio else ["-an"]),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(batch_out),
+            ]
+            await self.runner.run_ffmpeg(args)
+            current_in = batch_out
 
     async def _export_rendition(
         self, master_path: Path, output_path: Path, width: int, height: int, has_audio: bool
