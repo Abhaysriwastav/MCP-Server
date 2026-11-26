@@ -44,6 +44,29 @@ def list_sources(app: AppContext, limit: int = 50) -> dict[str, Any]:
     return {"count": len(sources), "sources": [s.model_dump() for s in sources]}
 
 
+def delete_source(app: AppContext, source_id: str, delete_file: bool = True) -> dict[str, Any]:
+    """Delete a registered source from the store and, if inside workspace, unlink its cached file."""
+    src = app.store.get_source(source_id)
+    if src is None:
+        raise ValueError(f"Source not found: {source_id}")
+
+    file_removed = False
+    if delete_file and src.local_path:
+        candidate = Path(src.local_path).resolve()
+        ws_root = app.settings.workspace_dir.resolve()
+        if ws_root in candidate.parents and candidate.is_file():
+            candidate.unlink(missing_ok=True)
+            file_removed = True
+
+    app.store.delete_source(source_id)
+    app.store.log_activity(
+        category="ingest",
+        message=f"Deleted source '{src.filename}'",
+        details={"source_id": source_id, "file_removed": file_removed},
+    )
+    return {"deleted": True, "source_id": source_id, "file_removed": file_removed}
+
+
 async def transcribe_source(
     app: AppContext,
     source_id: str,

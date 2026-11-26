@@ -65,6 +65,15 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         return ingest.list_sources(_app(ctx), limit=limit)
 
     @mcp.tool()
+    def delete_source(
+        ctx: Context,
+        source_id: str,
+        delete_file: bool = True,
+    ) -> dict[str, Any]:
+        """Delete a registered media source and optionally its workspace-cached file."""
+        return ingest.delete_source(_app(ctx), source_id=source_id, delete_file=delete_file)
+
+    @mcp.tool()
     async def transcribe_source(
         ctx: Context,
         source_id: str,
@@ -110,7 +119,8 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         output_profile: 'landscape_16x9', 'vertical_9x16', or 'both' (default).
         operations: list of dicts with 'op' in {trim, scale, reframe, audio_normalize,
                     fade, speed, text_overlay, watermark, burn_subtitles, auto_caption,
-                    voice_clone, remove_silences, smart_crop}.
+                    voice_clone, remove_silences, smart_crop, background_music,
+                    color_preset, crossfade_merge}.
         """
         return editing.create_edit_job(
             _app(ctx),
@@ -155,6 +165,15 @@ def build_server(settings: Settings | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         """List edit jobs, optionally filtered by status."""
         return editing.list_jobs(_app(ctx), status=status, limit=limit)
+
+    @mcp.tool()
+    def delete_job(
+        ctx: Context,
+        job_id: str,
+        delete_files: bool = True,
+    ) -> dict[str, Any]:
+        """Delete an edit job and optionally remove its rendered workspace files."""
+        return editing.delete_job(_app(ctx), job_id=job_id, delete_files=delete_files)
 
     @mcp.tool()
     async def generate_thumbnail(

@@ -118,6 +118,10 @@ def create_dashboard_server(
                 self.wfile.write(body)
                 return
 
+            if path == "/health":
+                self._send_json(HTTPStatus.OK, {"status": "ok"})
+                return
+
             if path == "/api/overview":
                 jobs = app.store.list_jobs(limit=50)
                 sources = app.store.list_sources(limit=50)
@@ -284,6 +288,31 @@ def create_dashboard_server(
 
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith("/api/jobs/"):
+                job_id = path.removeprefix("/api/jobs/").strip("/")
+                if not job_id or "/" in job_id:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid job path"})
+                    return
+                try:
+                    self._send_json(HTTPStatus.OK, editing.delete_job(app, job_id))
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            if path.startswith("/api/sources/"):
+                source_id = path.removeprefix("/api/sources/").strip("/")
+                if not source_id or "/" in source_id:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid source path"})
+                    return
+                try:
+                    self._send_json(HTTPStatus.OK, ingest.delete_source(app, source_id))
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             path = parsed.path
@@ -385,6 +414,19 @@ def create_dashboard_server(
                     except Exception as exc:
                         self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                     return
+                if len(parts) == 2 and parts[1] == "delete":
+                    source_id = parts[0]
+                    try:
+                        payload = self._read_json()
+                        res = ingest.delete_source(
+                            app,
+                            source_id=source_id,
+                            delete_file=bool(payload.get("delete_file", True)),
+                        )
+                        self._send_json(HTTPStatus.OK, res)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid source action path"})
                 return
 
@@ -416,34 +458,6 @@ def create_dashboard_server(
                     self._send_json(HTTPStatus.OK, updated)
                 except Exception as exc:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-                return
-
-            if path.startswith("/api/jobs/") and path.endswith("/bundle.zip"):
-                job_id = path.removeprefix("/api/jobs/").removesuffix("/bundle.zip").strip("/")
-                job = app.store.get_job(job_id)
-                if job is None:
-                    self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Job not found: {job_id}"})
-                    return
-                if not job.artifacts:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Job has no artifacts yet."})
-                    return
-                buf_path = app.settings.workspace_dir / "renders" / f"{job_id}_bundle.zip"
-                buf_path.parent.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(buf_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for art in job.artifacts:
-                        p = Path(art.path)
-                        if p.is_file():
-                            zf.write(p, arcname=p.name)
-                    cert = app.settings.release_dir / job_id / "approval_certificate.json"
-                    if cert.is_file():
-                        zf.write(cert, arcname="approval_certificate.json")
-                data = buf_path.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Disposition", f'attachment; filename="{job_id}_bundle.zip"')
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
                 return
 
             if path.startswith("/api/jobs/"):
@@ -482,6 +496,12 @@ def create_dashboard_server(
                         res = editing.resume_job(app, job_id)
                     elif action == "cancel":
                         res = editing.cancel_job(app, job_id)
+                    elif action == "delete":
+                        res = editing.delete_job(
+                            app,
+                            job_id,
+                            delete_files=bool(payload.get("delete_files", True)),
+                        )
                     elif action == "retry":
                         res = editing.update_edit_job(app, job_id)
                         threading.Thread(

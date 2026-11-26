@@ -431,10 +431,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <nav id="main-nav">
       <button class="tab-btn active" onclick="switchTab('overview', this)">Overview</button>
-      <button class="tab-btn" onclick="switchTab('ingest', this)">Ingest</button>
+      <button class="tab-btn" onclick="switchTab('ingest', this)">Ingest <span class="mono" id="ingest-tab-badge" style="margin-left:5px;font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(148,163,184,0.2);color:#cbd5e1;">0</span></button>
       <button class="tab-btn" onclick="switchTab('studio', this)">Edit Studio</button>
       <button class="tab-btn" onclick="switchTab('dialogue', this)">Dialogue Clipper</button>
-      <button class="tab-btn" onclick="switchTab('jobs', this)">Jobs &amp; Activity</button>
+      <button class="tab-btn" onclick="switchTab('jobs', this)">Jobs &amp; Activity <span class="mono" id="jobs-tab-badge" style="margin-left:5px;font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(59,130,246,0.22);color:#93c5fd;">0</span></button>
       <button class="tab-btn" onclick="switchTab('config', this)">Configuration</button>
       <button class="tab-btn" onclick="refreshAll()">Refresh</button>
     </nav>
@@ -615,6 +615,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      <div class="card" style="margin-bottom: 18px;">
+        <div class="card-head">
+          <span>Media Library (Videos, Audio &amp; Logos)</span>
+          <span class="mono" id="sources-count">0 files</span>
+        </div>
+        <div class="card-body" style="padding: 0 14px 14px; overflow-x: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>ID</th>
+                <th>Kind</th>
+                <th>Size / Duration</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="sources-tbody"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <section id="tab-dialogue" class="hidden">
@@ -643,6 +664,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="mono">No MCP client needed</span>
         </div>
         <div class="card-body">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;">
+            <span class="mono" style="font-size:12px;color:var(--muted);">One-Click Presets:</span>
+            <button type="button" class="btn btn-sec" style="padding:5px 10px;font-size:12px;" onclick="applyStudioPreset('shorts_viral')">Shorts Viral</button>
+            <button type="button" class="btn btn-sec" style="padding:5px 10px;font-size:12px;" onclick="applyStudioPreset('podcast')">Podcast Cleanup</button>
+            <button type="button" class="btn btn-sec" style="padding:5px 10px;font-size:12px;" onclick="applyStudioPreset('cinematic')">Cinematic Reel</button>
+            <button type="button" class="btn btn-sec" style="padding:5px 10px;font-size:12px;" onclick="applyStudioPreset('hindi_dub')">AI Hindi Dub</button>
+          </div>
           <div id="builder-preview-wrap" style="position:relative;margin-bottom:12px;border-radius:10px;overflow:hidden;background:#050814;border:1px solid var(--border);display:none;">
             <div style="position:relative;width:100%;display:flex;justify-content:center;background:#000;overflow:hidden;">
               <video id="builder-preview-video" controls preload="metadata" style="width:100%;max-height:320px;display:block;background:#000;transition:filter 0.2s;"></video>
@@ -895,22 +923,144 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     async function refreshAll() {
       const res = await fetch("/api/overview");
       const data = await res.json();
+      const sources = data.sources || [];
       renderKPIs(data.summary);
       renderStatusDonut(data.summary);
-      renderAnalyticsGraphics(data.jobs, data.sources || [], data.summary);
+      renderAnalyticsGraphics(data.jobs, sources, data.summary);
       lastJobsCache = data.jobs || [];
       renderJobs(lastJobsCache);
       renderPipelineFlow(lastJobsCache);
+
+      const ingestBadge = document.getElementById("ingest-tab-badge");
+      if (ingestBadge) ingestBadge.textContent = String(sources.length);
+      const jobsBadge = document.getElementById("jobs-tab-badge");
+      if (jobsBadge) {
+        const renderingCount = lastJobsCache.filter(j => j.status === "rendering").length;
+        if (renderingCount > 0) {
+          jobsBadge.textContent = `${renderingCount} active`;
+          jobsBadge.style.background = "rgba(245,158,11,0.25)";
+          jobsBadge.style.color = "#fcd34d";
+        } else {
+          jobsBadge.textContent = String(lastJobsCache.length);
+          jobsBadge.style.background = "rgba(59,130,246,0.22)";
+          jobsBadge.style.color = "#93c5fd";
+        }
+      }
+
       if (data.system) {
         const enc = data.system.nvenc ? "NVENC" : "libx264";
         document.getElementById("hw-pill").textContent = `${data.system.compute} · ${enc} · ${data.system.voice_provider}`;
       }
       renderActivity(data.activity);
-      renderSourceSelect(data.sources || []);
+      renderSourceSelect(sources);
+      renderSourcesTable(sources);
       if (selectedJobId) {
         const job = data.jobs.find(j => j.job_id === selectedJobId);
         if (job) renderInspector(job);
       }
+    }
+
+    function renderSourcesTable(sources) {
+      const countEl = document.getElementById("sources-count");
+      const tbody = document.getElementById("sources-tbody");
+      if (!tbody) return;
+      if (countEl) countEl.textContent = `${sources.length} files`;
+      if (!sources.length) {
+        tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted);padding:14px;">No media sources ingested yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = sources.map(s => {
+        const title = (s.probe && s.probe.youtube && s.probe.youtube.title) || s.filename;
+        const sizeMb = ((s.size_bytes || 0) / (1024 * 1024)).toFixed(2);
+        const dur = s.probe && s.probe.duration_sec ? `${Number(s.probe.duration_sec).toFixed(1)}s` : "n/a";
+        return `<tr>
+          <td><strong>${title}</strong></td>
+          <td class="mono">${s.source_id}</td>
+          <td><span class="badge b-draft">${s.kind}</span></td>
+          <td class="mono">${sizeMb} MB · ${dur}</td>
+          <td style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-sec" style="padding:4px 9px;font-size:11px;" onclick="openSourceInStudio('${s.source_id}')">Edit</button>
+            <button type="button" class="btn btn-red" style="padding:4px 9px;font-size:11px;" onclick="deleteSource('${s.source_id}')">Delete</button>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+
+    function openSourceInStudio(sourceId) {
+      const sel = document.getElementById("builder-source");
+      if (sel) {
+        sel.value = sourceId;
+        updateBuilderPreview();
+      }
+      const studioBtn = document.querySelector("#main-nav button[onclick*=\"'studio'\"]");
+      switchTab("studio", studioBtn);
+    }
+
+    async function deleteSource(sourceId) {
+      if (!confirm(`Delete source ${sourceId}? Workspace-cached copy will also be removed.`)) return;
+      const res = await fetch(`/api/sources/${sourceId}/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete_file: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`Delete failed: ${data.error || res.status}`);
+        return;
+      }
+      showToast(`Deleted source ${sourceId}`);
+      await refreshAll();
+    }
+
+    function applyStudioPreset(name) {
+      if (name === "shorts_viral") {
+        document.getElementById("builder-profile").value = "vertical_9x16";
+        document.getElementById("builder-facecrop").checked = true;
+        document.getElementById("builder-nosilence").checked = true;
+        document.getElementById("builder-norm").checked = true;
+        document.getElementById("builder-caption").checked = true;
+        document.getElementById("builder-cap-color").value = "yellow";
+        document.getElementById("builder-cap-pos").value = "center";
+        document.getElementById("builder-cap-size").value = "26";
+        document.getElementById("builder-cap-bg").checked = true;
+        document.getElementById("builder-color").value = "vivid";
+        document.getElementById("builder-guide-916").checked = true;
+        document.getElementById("builder-voice").checked = false;
+        document.getElementById("builder-dub-lang").value = "";
+      } else if (name === "podcast") {
+        document.getElementById("builder-profile").value = "both";
+        document.getElementById("builder-nosilence").checked = true;
+        document.getElementById("builder-norm").checked = true;
+        document.getElementById("builder-caption").checked = true;
+        document.getElementById("builder-cap-color").value = "white";
+        document.getElementById("builder-cap-pos").value = "bottom";
+        document.getElementById("builder-cap-size").value = "20";
+        document.getElementById("builder-cap-bg").checked = true;
+        document.getElementById("builder-color").value = "original";
+        document.getElementById("builder-guide-916").checked = false;
+        document.getElementById("builder-voice").checked = false;
+        document.getElementById("builder-dub-lang").value = "";
+      } else if (name === "cinematic") {
+        document.getElementById("builder-profile").value = "vertical_9x16";
+        document.getElementById("builder-facecrop").checked = true;
+        document.getElementById("builder-nosilence").checked = false;
+        document.getElementById("builder-norm").checked = true;
+        document.getElementById("builder-caption").checked = false;
+        document.getElementById("builder-color").value = "cinematic";
+        document.getElementById("builder-guide-916").checked = true;
+        document.getElementById("builder-voice").checked = false;
+        document.getElementById("builder-dub-lang").value = "";
+      } else if (name === "hindi_dub") {
+        document.getElementById("builder-profile").value = "both";
+        document.getElementById("builder-voice").checked = true;
+        document.getElementById("builder-dub-lang").value = "hi";
+        document.getElementById("builder-caption").checked = true;
+        document.getElementById("builder-norm").checked = true;
+        document.getElementById("builder-color").value = "original";
+        document.getElementById("builder-guide-916").checked = false;
+      }
+      updateBuilderOverlays();
+      showToast(`Applied preset: ${name.replace("_", " ")}`);
     }
 
     function renderAnalyticsGraphics(jobs, sources, summary) {
@@ -1469,6 +1619,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function selectJob(jobId) {
       selectedJobId = jobId;
+      const jobsTab = document.getElementById("tab-jobs");
+      if (jobsTab && jobsTab.classList.contains("hidden")) {
+        switchTab("jobs", document.querySelector("#main-nav button[onclick*=\"'jobs'\"]"));
+      }
       const res = await fetch(`/api/jobs/${jobId}`);
       if (!res.ok) return;
       const data = await res.json();
@@ -1531,6 +1685,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','publish_dry')">Publish (Dry Run)</button>`);
         actions.push(`<button class="btn btn-green" onclick="jobAction('${job.job_id}','publish')">Publish Release</button>`);
       }
+      if (!["rendering", "paused"].includes(job.status)) {
+        actions.push(`<button class="btn btn-red" onclick="deleteJob('${job.job_id}')">Delete Job</button>`);
+      }
 
       document.getElementById("insp-body").innerHTML = `
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
@@ -1587,6 +1744,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         showToast(`Action '${action}' completed.`);
         await refreshAll();
       }
+    }
+
+    async function deleteJob(jobId) {
+      if (!confirm(`Delete job ${jobId} and its rendered workspace files?`)) return;
+      const res = await fetch(`/api/jobs/${jobId}/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete_files: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`Delete failed: ${data.error || res.status}`);
+        return;
+      }
+      closeInspector();
+      showToast(`Deleted job ${jobId}`);
+      await refreshAll();
     }
 
     async function loadConfig() {
