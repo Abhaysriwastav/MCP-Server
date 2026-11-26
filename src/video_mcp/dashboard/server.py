@@ -126,6 +126,11 @@ def create_dashboard_server(
                     counts[j.status.value] = counts.get(j.status.value, 0) + 1
                 counts["total_jobs"] = len(jobs)
                 counts["total_sources"] = len(sources)
+                from video_mcp.media.transcriber import _resolve_whisper_device
+
+                w_dev, _ = _resolve_whisper_device(
+                    app.settings.whisper_device, app.settings.whisper_compute_type
+                )
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -133,6 +138,12 @@ def create_dashboard_server(
                         "jobs": [j.model_dump() for j in jobs],
                         "sources": [s.model_dump() for s in sources],
                         "activity": events,
+                        "system": {
+                            "compute": "CUDA GPU" if w_dev == "cuda" else "CPU",
+                            "nvenc": app.runner.has_nvenc(),
+                            "voice_provider": app.settings.voice_provider,
+                            "whisper_model": app.settings.whisper_model,
+                        },
                     },
                 )
                 return
@@ -408,6 +419,12 @@ def create_dashboard_server(
                             reviewer=str(payload.get("reviewer") or "dashboard-reviewer"),
                             reason=str(payload.get("reason") or "Rejected via dashboard"),
                         )
+                    elif action == "retry":
+                        res = editing.update_edit_job(app, job_id)
+                        threading.Thread(
+                            target=lambda: asyncio.run(editing.render_edit_job(app, job_id)),
+                            daemon=True,
+                        ).start()
                     elif action == "auto_caption":
                         job = app.store.get_job(job_id)
                         if job is None:

@@ -397,6 +397,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </svg>
       <span class="brand-title">Video Automation MCP</span>
       <span class="live-pill"><span class="dot"></span><span id="conn-label">LIVE</span></span>
+      <span class="mono" id="hw-pill" style="padding:3px 10px;border-radius:999px;font-size:11px;background:rgba(59,130,246,0.14);border:1px solid rgba(96,165,250,0.35);color:#93c5fd;">CPU · omnivoice</span>
     </div>
     <nav>
       <button class="tab-btn active" onclick="switchTab('live', this)">Live Studio</button>
@@ -561,9 +562,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       <div class="grid-2">
         <div class="card">
-          <div class="card-head">
+          <div class="card-head" style="flex-wrap:wrap;gap:8px;">
             <span>Processing Jobs</span>
-            <span class="mono" id="jobs-count">0 jobs</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;" id="job-filters">
+              <button class="tab-btn active" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('all', this)">All</button>
+              <button class="tab-btn" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('rendering', this)">Rendering</button>
+              <button class="tab-btn" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('ready_for_review', this)">Ready</button>
+              <button class="tab-btn" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('pending_approval', this)">Pending</button>
+              <button class="tab-btn" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('published', this)">Published</button>
+              <button class="tab-btn" style="padding:3px 9px;font-size:11px;" onclick="setJobFilter('failed', this)">Failed</button>
+              <span class="mono" id="jobs-count" style="margin-left:4px;">0 jobs</span>
+            </div>
           </div>
           <div class="card-body" style="padding: 0 14px 14px; overflow-x: auto;">
             <table>
@@ -661,6 +670,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let selectedJobId = null;
     let lastInspectedSig = null;
     let hasActiveRender = false;
+    let activeJobFilter = "all";
+    let lastJobsCache = [];
+
+    function setJobFilter(status, btn) {
+      activeJobFilter = status;
+      document.querySelectorAll("#job-filters .tab-btn").forEach(b => b.classList.remove("active"));
+      if (btn) btn.classList.add("active");
+      renderJobs(lastJobsCache);
+    }
 
     function showToast(msg) {
       const el = document.getElementById("toast");
@@ -688,8 +706,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       renderKPIs(data.summary);
       renderStatusDonut(data.summary);
       renderAnalyticsGraphics(data.jobs, data.sources || [], data.summary);
-      renderJobs(data.jobs);
-      renderPipelineFlow(data.jobs);
+      lastJobsCache = data.jobs || [];
+      renderJobs(lastJobsCache);
+      renderPipelineFlow(lastJobsCache);
+      if (data.system) {
+        const enc = data.system.nvenc ? "NVENC" : "libx264";
+        document.getElementById("hw-pill").textContent = `${data.system.compute} · ${enc} · ${data.system.voice_provider}`;
+      }
       renderActivity(data.activity);
       renderSourceSelect(data.sources || []);
       if (selectedJobId) {
@@ -940,13 +963,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function renderJobs(jobs) {
-      document.getElementById("jobs-count").textContent = `${jobs.length} jobs`;
+      hasActiveRender = jobs.some(j => j.status === "rendering");
+      const filtered = activeJobFilter === "all" ? jobs : jobs.filter(j => j.status === activeJobFilter);
+      document.getElementById("jobs-count").textContent = `${filtered.length}/${jobs.length}`;
       const tbody = document.getElementById("jobs-tbody");
-      if (!jobs.length) {
-        tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted);">No jobs yet. Use MCP tools or ingest above to create a job.</td></tr>`;
+      if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted);">No matching jobs.</td></tr>`;
         return;
       }
-      tbody.innerHTML = jobs.map(j => {
+      tbody.innerHTML = filtered.map(j => {
         const pct = Math.round(j.progress_pct || 0);
         const isRendering = j.status === "rendering";
         const progressHtml = isRendering
@@ -1009,11 +1034,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const actions = [];
       const hasAutoCaption = (job.operations || []).some(op => op.op === "auto_caption");
       const hasVoiceClone = (job.operations || []).some(op => op.op === "voice_clone");
+      const srtArt = (job.artifacts || []).find(a => a.kind === "subtitles_srt");
+      if (["failed", "draft"].includes(job.status)) {
+        actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','retry')">Retry Render</button>`);
+      }
       if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasAutoCaption) {
         actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','auto_caption')">Add Auto-Caption &amp; Re-render</button>`);
       }
       if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasVoiceClone) {
         actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','voice_clone')">Replace with AI Voice &amp; Re-render</button>`);
+      }
+      if (srtArt) {
+        actions.push(`<a class="btn btn-sec" style="text-decoration:none;" href="/api/files?path=${encodeURIComponent(srtArt.path)}" download="captions.srt">Download .SRT</a>`);
       }
       if (job.status === "ready_for_review" || job.status === "rejected") {
         actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','request_approval')">Request Approval</button>`);
