@@ -81,10 +81,11 @@ video-automation-dashboard
 ```
 
 ### Dashboard Features
+- **3D Glassmorphic Studio UI & Live Graphics**: Animated 3D perspective grid, floating studio cube, live AI audio waveform visualizer, 5-stage pipeline flow indicator, SVG status donut chart, 3D artifact bar chart, render health radial gauge, and a live Hardware/GPU badge (`CUDA GPU` / `CPU · NVENC / libx264`).
 - **Device Upload & YouTube / URL Ingest**: Upload local videos or paste `youtube.com` / `youtu.be` / `shorts` / HTTP / S3 links directly in the UI with optional **Auto-caption (Whisper)** and **AI Voice Clone** (with optional custom script).
-- **Live Render Progress**: Real-time `0–100%` progress bar and stage indicator driven by FFmpeg progress streaming.
+- **Live Render Progress & ETA**: Real-time `0–100%` shimmering progress bar, stage indicator, elapsed timer, and dynamic ETA countdown driven by FFmpeg progress streaming.
 - **Clip Viral Dialogue**: Search spoken dialogue by keyword/phrase (or auto-rank top moments) and one-click **Clip & Render** into synced `16:9` + `9:16` outputs.
-- **Job Inspector & Approval Gate**: Stream rendered MP4s inline, add auto-captions to existing jobs, and **Approve / Reject / Publish**.
+- **Job Filters, Retry & Approval Gate**: Filter jobs by status (`All`, `Rendering`, `Ready`, `Pending`, `Published`, `Failed`), stream rendered MP4s inline, one-click **Retry Render**, **Download `.srt`**, add auto-captions or AI voice to existing jobs, and **Approve / Reject / Publish**.
 
 ### Docker Compose (with NVIDIA CUDA GPU + all `requirements.txt` packages)
 
