@@ -109,7 +109,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
 
         output_profile: 'landscape_16x9', 'vertical_9x16', or 'both' (default).
         operations: list of dicts with 'op' in {trim, scale, reframe, audio_normalize,
-                    fade, speed, text_overlay, watermark, burn_subtitles, auto_caption}.
+                    fade, speed, text_overlay, watermark, burn_subtitles, auto_caption, voice_clone}.
         """
         return editing.create_edit_job(
             _app(ctx),

@@ -8,6 +8,7 @@ from video_mcp.config import Settings
 from video_mcp.media.ffmpeg_runner import FFmpegRunner
 from video_mcp.media.pipeline import VideoPipeline
 from video_mcp.media.transcriber import Transcriber
+from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.publishing.publisher import PublishingService
 from video_mcp.sources.resolver import SourceResolver
 from video_mcp.storage.job_store import JobStore
@@ -22,6 +23,7 @@ class AppContext:
     runner: FFmpegRunner
     resolver: SourceResolver
     transcriber: Transcriber
+    voice_cloner: VoiceCloner
     pipeline: VideoPipeline
     publisher: PublishingService
 
@@ -38,10 +40,12 @@ class AppContext:
         )
         resolver = SourceResolver(cfg, runner)
         transcriber = Transcriber(cfg)
+        voice_cloner = VoiceCloner(cfg, runner)
         pipeline = VideoPipeline(
             runner,
             cfg.workspace_dir,
             transcriber=transcriber,
+            voice_cloner=voice_cloner,
             default_max_words_per_line=cfg.subtitle_max_words_per_line,
         )
         publisher = PublishingService(cfg)
@@ -51,6 +55,7 @@ class AppContext:
             runner=runner,
             resolver=resolver,
             transcriber=transcriber,
+            voice_cloner=voice_cloner,
             pipeline=pipeline,
             publisher=publisher,
         )

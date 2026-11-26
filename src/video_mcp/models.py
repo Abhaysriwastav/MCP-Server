@@ -137,6 +137,15 @@ class AutoCaptionOp(BaseModel):
     margin_v: int = Field(default=55, ge=0, le=240)
 
 
+class VoiceCloneOp(BaseModel):
+    op: Literal["voice_clone"] = "voice_clone"
+    reference_audio_source_id: str | None = None
+    voice_id: str | None = None
+    script_text: str | None = None
+    language: str = Field(default="en", min_length=2, max_length=10)
+    keep_background_audio: bool = False
+
+
 EditOperation = Annotated[
     Union[
         TrimOp,
@@ -149,6 +158,7 @@ EditOperation = Annotated[
         WatermarkOp,
         BurnSubtitlesOp,
         AutoCaptionOp,
+        VoiceCloneOp,
     ],
     Field(discriminator="op"),
 ]
@@ -175,6 +185,7 @@ class RenderedArtifact(BaseModel):
         "probe",
         "subtitles_srt",
         "transcript",
+        "voice_dub",
     ]
     path: str
     sha256: str

@@ -69,12 +69,18 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
 
     parsed_ops = _OP_ADAPTER.validate_python(job.operations)
     watermark_sources: dict[str, SourceAsset] = {}
+    voice_reference_sources: dict[str, SourceAsset] = {}
     for op in parsed_ops:
         if op.op == "watermark":
             wm_src = app.store.get_source(op.image_source_id)
             if wm_src is None:
                 raise ValueError(f"Missing watermark source: {op.image_source_id}")
             watermark_sources[op.image_source_id] = wm_src
+        elif op.op == "voice_clone" and op.reference_audio_source_id:
+            ref_src = app.store.get_source(op.reference_audio_source_id)
+            if ref_src is None:
+                raise ValueError(f"Missing voice reference source: {op.reference_audio_source_id}")
+            voice_reference_sources[op.reference_audio_source_id] = ref_src
 
     job.status = JobStatus.RENDERING
     job.progress_pct = 0.0
@@ -108,6 +114,7 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             operations=parsed_ops,
             output_profile=job.output_profile,
             watermark_sources=watermark_sources,
+            voice_reference_sources=voice_reference_sources,
             progress_cb=_on_progress,
         )
         job.artifacts = artifacts

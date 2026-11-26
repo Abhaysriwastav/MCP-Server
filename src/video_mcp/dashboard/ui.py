@@ -166,6 +166,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <input type="checkbox" id="upload-autocaption" />
               <span>Auto-caption (Whisper)</span>
             </label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+              <input type="checkbox" id="upload-voiceclone" />
+              <span>AI Voice Clone</span>
+            </label>
             <button class="btn" id="upload-btn" onclick="uploadSelectedVideo()">Upload File</button>
             <div style="width:100%;display:flex;gap:10px;align-items:center;margin-top:4px;">
               <input type="text" id="ingest-url" placeholder="Paste YouTube URL (youtube.com / youtu.be / shorts) or HTTP/S3 URL..." style="flex:1;" />
@@ -388,7 +392,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     async function clipDialogueMoment(sourceId, startSec, endSec, idx) {
       const profile = document.getElementById("upload-profile").value;
       const captionChecked = document.getElementById("upload-autocaption").checked;
+      const voiceChecked = document.getElementById("upload-voiceclone").checked;
       const ops = [{ op: "trim", start_sec: startSec, end_sec: endSec }];
+      if (voiceChecked) ops.push({ op: "voice_clone" });
       if (captionChecked) ops.push({ op: "auto_caption" });
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -493,8 +499,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const thumbs = (job.artifacts || []).filter(a => a.kind === "thumbnail");
       const actions = [];
       const hasAutoCaption = (job.operations || []).some(op => op.op === "auto_caption");
+      const hasVoiceClone = (job.operations || []).some(op => op.op === "voice_clone");
       if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasAutoCaption) {
         actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','auto_caption')">Add Auto-Caption &amp; Re-render</button>`);
+      }
+      if (["draft", "ready_for_review", "rejected", "failed"].includes(job.status) && !hasVoiceClone) {
+        actions.push(`<button class="btn btn-sec" onclick="jobAction('${job.job_id}','voice_clone')">Replace with AI Voice &amp; Re-render</button>`);
       }
       if (job.status === "ready_for_review" || job.status === "rejected") {
         actions.push(`<button class="btn" onclick="jobAction('${job.job_id}','request_approval')">Request Approval</button>`);
@@ -654,7 +664,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const ytTitle = src.probe && src.probe.youtube && src.probe.youtube.title;
       const title = document.getElementById("upload-title").value.trim() || ytTitle || src.filename;
       const profile = document.getElementById("upload-profile").value;
-      const ops = document.getElementById("upload-autocaption").checked ? [{ op: "auto_caption" }] : [];
+      const ops = [];
+      if (document.getElementById("upload-voiceclone").checked) ops.push({ op: "voice_clone" });
+      if (document.getElementById("upload-autocaption").checked) ops.push({ op: "auto_caption" });
       const jobRes = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

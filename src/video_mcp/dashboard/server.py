@@ -420,6 +420,26 @@ def create_dashboard_server(
                             target=lambda: asyncio.run(editing.render_edit_job(app, job_id)),
                             daemon=True,
                         ).start()
+                    elif action == "voice_clone":
+                        job = app.store.get_job(job_id)
+                        if job is None:
+                            raise ValueError(f"Job not found: {job_id}")
+                        ops = list(job.operations)
+                        if not any(op.get("op") == "voice_clone" for op in ops):
+                            ops.append(
+                                {
+                                    "op": "voice_clone",
+                                    "script_text": payload.get("script_text") or None,
+                                    "reference_audio_source_id": payload.get("reference_audio_source_id") or None,
+                                    "voice_id": payload.get("voice_id") or None,
+                                    "keep_background_audio": bool(payload.get("keep_background_audio", False)),
+                                }
+                            )
+                        res = editing.update_edit_job(app, job_id, operations=ops)
+                        threading.Thread(
+                            target=lambda: asyncio.run(editing.render_edit_job(app, job_id)),
+                            daemon=True,
+                        ).start()
                     elif action in {"publish", "publish_dry"}:
                         res = asyncio.run(
                             publishing.publish_job(

@@ -12,6 +12,7 @@ from typing import Any
 
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
 from video_mcp.media.transcriber import Transcriber, generate_srt
+from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.models import (
     AudioNormalizeOp,
     AutoCaptionOp,
@@ -25,7 +26,9 @@ from video_mcp.models import (
     SourceAsset,
     SpeedOp,
     TextOverlayOp,
+    TranscriptSegment,
     TrimOp,
+    VoiceCloneOp,
     WatermarkOp,
 )
 
@@ -127,11 +130,13 @@ class VideoPipeline:
         runner: FFmpegRunner,
         workspace_dir: Path,
         transcriber: Transcriber | None = None,
+        voice_cloner: VoiceCloner | None = None,
         default_max_words_per_line: int = 6,
     ) -> None:
         self.runner = runner
         self.workspace_dir = workspace_dir
         self.transcriber = transcriber
+        self.voice_cloner = voice_cloner
         self.default_max_words_per_line = default_max_words_per_line
 
     async def render_job(
@@ -141,6 +146,7 @@ class VideoPipeline:
         operations: list[EditOperation],
         output_profile: OutputProfile,
         watermark_sources: dict[str, SourceAsset] | None = None,
+        voice_reference_sources: dict[str, SourceAsset] | None = None,
         progress_cb: Callable[[float, str], None] | None = None,
     ) -> list[RenderedArtifact]:
         """Run the full editing pipeline for a job and return rendered media + metadata artifacts."""
@@ -172,16 +178,21 @@ class VideoPipeline:
             has_audio = await self._concat_sources(sources, base_input)
             base_duration = sum(float(s.probe.get("duration_sec") or 0.0) for s in sources)
 
-        # Step 2: Separate auto_caption from pre-caption edit operations so that
-        # trim/concat/speed run first, then transcription & SRT generation run on
-        # the cut clip (timestamps starting at 00:00:00,000), then subtitles are
-        # burned into master_edited.mp4 before splitting into 16:9 and 9:16.
+        # Step 2: Separate voice_clone and auto_caption from pre-caption edit ops
+        # so trim/concat/speed run first, then transcription, AI voice replacement,
+        # and SRT generation run on the cut clip (timestamps at 00:00:00,000) before
+        # splitting into 16:9 and 9:16.
         caption_ops = [op for op in operations if isinstance(op, AutoCaptionOp)]
-        pre_caption_ops = [op for op in operations if not isinstance(op, AutoCaptionOp)]
+        voice_ops = [op for op in operations if isinstance(op, VoiceCloneOp)]
+        pre_caption_ops = [
+            op for op in operations if not isinstance(op, (AutoCaptionOp, VoiceCloneOp))
+        ]
         artifacts: list[RenderedArtifact] = []
 
         if pre_caption_ops:
-            pre_caption_path = job_dir / ("pre_caption.mp4" if caption_ops else "master_edited.mp4")
+            pre_caption_path = job_dir / (
+                "pre_caption.mp4" if (caption_ops or voice_ops) else "master_edited.mp4"
+            )
             _report(10.0, "Applying edits")
             await self._apply_operations(
                 input_path=base_input,
@@ -189,24 +200,84 @@ class VideoPipeline:
                 operations=pre_caption_ops,
                 has_audio=has_audio,
                 watermark_sources=watermark_sources or {},
-                progress_cb=_sub_progress(10.0, 35.0, "Applying edits"),
+                progress_cb=_sub_progress(10.0, 30.0, "Applying edits"),
                 duration_sec=base_duration or None,
             )
         else:
             pre_caption_path = base_input
 
-        if caption_ops:
+        cached_segments: list[TranscriptSegment] | None = None
+        if caption_ops or (voice_ops and not voice_ops[-1].script_text):
             if self.transcriber is None:
-                raise RuntimeError("AutoCaptionOp requested but Transcriber is not configured.")
-            cap_op = caption_ops[-1]
-            _report(35.0, "Transcribing audio (Whisper)")
-            segments = await self.transcriber.transcribe_media(
+                raise RuntimeError("Transcription requested but Transcriber is not configured.")
+            _report(32.0, "Transcribing audio (Whisper)")
+            cached_segments = await self.transcriber.transcribe_media(
                 pre_caption_path, word_timestamps=True
             )
-            _report(45.0, "Generating captions")
+
+        voiced_path = pre_caption_path
+        if voice_ops:
+            if self.voice_cloner is None:
+                raise RuntimeError("VoiceCloneOp requested but VoiceCloner is not configured.")
+            v_op = voice_ops[-1]
+            script_text = (v_op.script_text or "").strip()
+            if not script_text and cached_segments:
+                script_text = " ".join(s.text.strip() for s in cached_segments if s.text.strip())
+            if not script_text:
+                raise RuntimeError("VoiceCloneOp found no spoken text or script_text to synthesize.")
+
+            ref_audio_path: Path | None = None
+            if v_op.reference_audio_source_id:
+                ref_src = (voice_reference_sources or {}).get(v_op.reference_audio_source_id)
+                if ref_src is None:
+                    raise ValueError(
+                        f"Voice reference source not found: {v_op.reference_audio_source_id}"
+                    )
+                ref_audio_path = Path(ref_src.local_path)
+            elif self.voice_cloner.settings.voice_provider == "coqui" and has_audio:
+                ref_audio_path = await self.voice_cloner.extract_reference_sample(
+                    pre_caption_path, job_dir / "voice_reference.wav"
+                )
+
+            _report(40.0, "Cloning AI voice")
+            dub_wav = job_dir / "ai_voice_dub.wav"
+            await self.voice_cloner.synthesize(
+                text=script_text,
+                output_path=dub_wav,
+                reference_audio_path=ref_audio_path,
+                voice_id=v_op.voice_id,
+                language=v_op.language,
+            )
+            artifacts.append(
+                self._make_artifact(
+                    kind="voice_dub",
+                    path=dub_wav,
+                    mime_type="audio/wav",
+                    metadata={
+                        "provider": self.voice_cloner.settings.voice_provider,
+                        "language": v_op.language,
+                    },
+                )
+            )
+
+            voiced_path = job_dir / ("pre_caption_voiced.mp4" if caption_ops else "master_edited.mp4")
+            _report(45.0, "Replacing audio with AI voice")
+            await self._apply_voice_dub(
+                input_path=pre_caption_path,
+                output_path=voiced_path,
+                dub_audio_path=dub_wav,
+                keep_background_audio=v_op.keep_background_audio,
+                has_audio=has_audio,
+            )
+            has_audio = True
+
+        if caption_ops:
+            assert cached_segments is not None
+            cap_op = caption_ops[-1]
+            _report(48.0, "Generating captions")
             transcript_path = job_dir / "transcript.json"
             transcript_path.write_text(
-                json.dumps([s.model_dump() for s in segments], indent=2),
+                json.dumps([s.model_dump() for s in cached_segments], indent=2),
                 encoding="utf-8",
             )
             artifacts.append(
@@ -214,13 +285,13 @@ class VideoPipeline:
                     kind="transcript",
                     path=transcript_path,
                     mime_type="application/json",
-                    metadata={"segment_count": len(segments)},
+                    metadata={"segment_count": len(cached_segments)},
                 )
             )
 
             srt_path = job_dir / "captions.srt"
             generate_srt(
-                segments=segments,
+                segments=cached_segments,
                 output_srt_path=srt_path,
                 max_words_per_cue=cap_op.max_words_per_cue or self.default_max_words_per_line,
                 max_chars_per_cue=cap_op.max_chars_per_cue,
@@ -230,26 +301,26 @@ class VideoPipeline:
                     kind="subtitles_srt",
                     path=srt_path,
                     mime_type="application/x-subrip",
-                    metadata={"segment_count": len(segments)},
+                    metadata={"segment_count": len(cached_segments)},
                 )
             )
 
             master_path = job_dir / "master_edited.mp4"
-            pre_probe = await self.runner.probe(pre_caption_path)
+            pre_probe = await self.runner.probe(voiced_path)
             pre_dur = float(pre_probe.get("duration_sec") or base_duration or 0.0)
-            _report(48.0, "Burning captions")
+            _report(50.0, "Burning captions")
             await self._burn_subtitles_only(
-                input_path=pre_caption_path,
+                input_path=voiced_path,
                 output_path=master_path,
                 srt_path=srt_path,
                 has_audio=bool(pre_probe.get("has_audio", has_audio)),
                 font_size=cap_op.font_size,
                 margin_v=cap_op.margin_v,
-                progress_cb=_sub_progress(48.0, 68.0, "Burning captions"),
+                progress_cb=_sub_progress(50.0, 68.0, "Burning captions"),
                 duration_sec=pre_dur or None,
             )
         else:
-            master_path = pre_caption_path
+            master_path = voiced_path
 
         master_probe = await self.runner.probe(master_path)
         master_dur = float(master_probe.get("duration_sec") or base_duration or 0.0)
@@ -262,7 +333,7 @@ class VideoPipeline:
             targets.append(("video_9x16", "vertical_9x16.mp4", 1080, 1920))
 
         rendition_probes: dict[str, Any] = {"master": master_probe, "renditions": {}}
-        export_start = 68.0 if (pre_caption_ops or caption_ops) else 10.0
+        export_start = 68.0 if (pre_caption_ops or caption_ops or voice_ops) else 10.0
         export_end = 97.0
         step_span = (export_end - export_start) / max(1, len(targets))
 
@@ -723,6 +794,61 @@ class VideoPipeline:
             )
             await self.runner.run_ffmpeg(args, progress_cb=batch_cb, duration_sec=duration_sec)
             current_in = batch_out
+
+    async def _apply_voice_dub(
+        self,
+        input_path: Path,
+        output_path: Path,
+        dub_audio_path: Path,
+        keep_background_audio: bool,
+        has_audio: bool,
+    ) -> None:
+        """Replace original voice (or mix over ducked original audio) with cloned AI audio."""
+        if keep_background_audio and has_audio:
+            args = [
+                "-i",
+                str(input_path),
+                "-i",
+                str(dub_audio_path),
+                "-filter_complex",
+                "[0:a]volume=0.12[bg];[1:a]aresample=48000[fg];[bg][fg]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        else:
+            args = [
+                "-i",
+                str(input_path),
+                "-i",
+                str(dub_audio_path),
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        await self.runner.run_ffmpeg(args)
 
     async def _export_rendition(
         self,
