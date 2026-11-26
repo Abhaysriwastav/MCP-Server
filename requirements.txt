@@ -9,5 +9,9 @@ yt-dlp>=2024.12.0
 faster-whisper>=1.1.0
 Pillow>=10.0.0
 
+# AI Voice Cloning (OmniVoice / Coqui XTTS-v2)
+omnivoice>=0.1.0
+coqui-tts>=0.24.0
+
 # Optional S3 source & publishing support
 boto3>=1.34.0

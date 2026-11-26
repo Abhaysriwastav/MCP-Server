@@ -54,7 +54,9 @@ class Settings(BaseModel):
     subtitle_max_words_per_line: int = Field(default=6, ge=1, le=20)
 
     # AI Voice Cloning
-    voice_provider: Literal["coqui", "elevenlabs"] = Field(default="coqui")
+    voice_provider: Literal["omnivoice", "coqui", "elevenlabs"] = Field(default="omnivoice")
+    omnivoice_model: str = Field(default="k2-fsa/OmniVoice")
+    omnivoice_device: str = Field(default="cpu")
     coqui_model: str = Field(default="tts_models/multilingual/multi-dataset/xtts_v2")
     elevenlabs_api_key: str | None = Field(default=None)
     elevenlabs_voice_id: str | None = Field(default=None)
@@ -75,6 +77,12 @@ class Settings(BaseModel):
         transport_raw = os.getenv("VIDEO_MCP_TRANSPORT", "stdio").strip().lower()
         transport: Literal["stdio", "streamable-http"] = (
             "streamable-http" if transport_raw == "streamable-http" else "stdio"
+        )
+        raw_vp = os.getenv("VIDEO_MCP_VOICE_PROVIDER", "omnivoice").strip().lower()
+        voice_provider: Literal["omnivoice", "coqui", "elevenlabs"] = (
+            "elevenlabs"
+            if raw_vp == "elevenlabs"
+            else ("coqui" if raw_vp == "coqui" else "omnivoice")
         )
         return cls(
             workspace_dir=workspace,
@@ -99,11 +107,9 @@ class Settings(BaseModel):
             whisper_compute_type=os.getenv("VIDEO_MCP_WHISPER_COMPUTE_TYPE", "int8"),
             youtube_max_duration_sec=_env_int("VIDEO_MCP_YOUTUBE_MAX_DURATION_SEC", 7200),
             subtitle_max_words_per_line=_env_int("VIDEO_MCP_SUBTITLE_MAX_WORDS_PER_LINE", 6),
-            voice_provider=(
-                "elevenlabs"
-                if os.getenv("VIDEO_MCP_VOICE_PROVIDER", "coqui").strip().lower() == "elevenlabs"
-                else "coqui"
-            ),
+            voice_provider=voice_provider,
+            omnivoice_model=os.getenv("VIDEO_MCP_OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),
+            omnivoice_device=os.getenv("VIDEO_MCP_OMNIVOICE_DEVICE", "cpu"),
             coqui_model=os.getenv(
                 "VIDEO_MCP_COQUI_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2"
             ),

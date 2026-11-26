@@ -136,6 +136,56 @@ class TestVoiceCloning(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_omnivoice_model_cached_and_generates_wav(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            ref_wav = tmp_path / "ref.wav"
+            _write_sine_wav(ref_wav, duration_sec=0.5)
+
+            cfg = Settings(
+                workspace_dir=tmp_path / "ws",
+                db_path=tmp_path / "ws" / "test.db",
+                allowed_local_roots=[tmp_path],
+                release_dir=tmp_path / "ws" / "releases",
+                voice_provider="omnivoice",
+            )
+            app = AppContext.create(cfg)
+            load_count = 0
+            gen_calls: list[dict[str, object]] = []
+
+            class FakeOmniVoice:
+                sampling_rate = 24000
+
+                @classmethod
+                def from_pretrained(cls, model_id: str, **kwargs: object) -> FakeOmniVoice:
+                    nonlocal load_count
+                    load_count += 1
+                    return cls()
+
+                def generate(self, **kwargs: object) -> list[np.ndarray]:
+                    gen_calls.append(kwargs)
+                    return [np.zeros(2400, dtype=np.float32)]
+
+            fake_ov = types.ModuleType("omnivoice")
+            fake_ov.OmniVoice = FakeOmniVoice  # type: ignore[attr-defined]
+            try:
+                with patch.dict(sys.modules, {"omnivoice": fake_ov}):
+                    out = asyncio.run(
+                        app.voice_cloner.synthesize(
+                            "OmniVoice test",
+                            tmp_path / "omni.wav",
+                            reference_audio_path=ref_wav,
+                            language="en",
+                        )
+                    )
+                self.assertTrue(out.is_file())
+                self.assertEqual(load_count, 1)
+                self.assertEqual(gen_calls[0]["ref_audio"], str(ref_wav))
+            finally:
+                app.close()
+
     @unittest.skipUnless(HAS_FFMPEG, "ffmpeg and ffprobe required for end-to-end voice dub test")
     def test_trim_voice_clone_and_auto_caption_pipeline(self) -> None:
         async def _run() -> None:

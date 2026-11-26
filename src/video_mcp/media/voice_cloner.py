@@ -25,6 +25,30 @@ class VoiceCloner:
         self.runner = runner
         self._lock = threading.RLock()
         self._tts: Any = None
+        self._omnivoice: Any = None
+
+    def _get_omnivoice(self) -> Any:
+        with self._lock:
+            if self._omnivoice is not None:
+                return self._omnivoice
+            try:
+                import torch  # type: ignore[import-not-found]
+                from omnivoice import OmniVoice  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise VoiceCloneError(
+                    "omnivoice is not installed. Install with: "
+                    "pip install omnivoice (or set VIDEO_MCP_VOICE_PROVIDER=coqui)."
+                ) from exc
+
+            device = self.settings.omnivoice_device
+            dtype = torch.float16 if device.startswith("cuda") else torch.float32
+            self._omnivoice = OmniVoice.from_pretrained(
+                self.settings.omnivoice_model,
+                device_map=device,
+                dtype=dtype,
+                load_asr=True,
+            )
+            return self._omnivoice
 
     def _get_coqui_tts(self) -> Any:
         with self._lock:
@@ -83,6 +107,14 @@ class VoiceCloner:
                 output_path=output_path,
                 voice_id=voice_id or self.settings.elevenlabs_voice_id,
             )
+        if self.settings.voice_provider == "omnivoice":
+            return await asyncio.to_thread(
+                self._synthesize_omnivoice_sync,
+                cleaned,
+                output_path,
+                reference_audio_path,
+                language,
+            )
 
         return await asyncio.to_thread(
             self._synthesize_coqui_sync,
@@ -91,6 +123,33 @@ class VoiceCloner:
             reference_audio_path,
             language,
         )
+
+    def _synthesize_omnivoice_sync(
+        self,
+        text: str,
+        output_path: Path,
+        reference_audio_path: Path | None,
+        language: str,
+    ) -> Path:
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        model = self._get_omnivoice()
+        kwargs: dict[str, Any] = {
+            "text": text,
+            "language": language,
+        }
+        if reference_audio_path is not None:
+            kwargs["ref_audio"] = str(reference_audio_path)
+
+        audios = model.generate(**kwargs)
+        if not audios:
+            raise VoiceCloneError("OmniVoice returned empty audio list.")
+        sample_rate = int(getattr(model, "sampling_rate", 24000))
+        sf.write(str(output_path), audios[0], sample_rate)
+
+        if not output_path.is_file():
+            raise VoiceCloneError(f"OmniVoice did not produce output file: {output_path}")
+        return output_path
 
     def _synthesize_coqui_sync(
         self,

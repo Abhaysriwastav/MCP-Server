@@ -234,7 +234,7 @@ class VideoPipeline:
                         f"Voice reference source not found: {v_op.reference_audio_source_id}"
                     )
                 ref_audio_path = Path(ref_src.local_path)
-            elif self.voice_cloner.settings.voice_provider == "coqui" and has_audio:
+            elif self.voice_cloner.settings.voice_provider in {"coqui", "omnivoice"} and has_audio:
                 ref_audio_path = await self.voice_cloner.extract_reference_sample(
                     pre_caption_path, job_dir / "voice_reference.wav"
                 )
