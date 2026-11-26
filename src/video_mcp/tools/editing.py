@@ -77,6 +77,8 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             watermark_sources[op.image_source_id] = wm_src
 
     job.status = JobStatus.RENDERING
+    job.progress_pct = 0.0
+    job.progress_stage = "Starting"
     job.approval_id = None
     job.artifacts = []
     job.error = None
@@ -88,6 +90,17 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
         details={"output_profile": job.output_profile.value},
     )
 
+    last_saved = {"pct": -1.0, "stage": ""}
+
+    def _on_progress(pct: float, stage: str) -> None:
+        rounded = round(pct, 1)
+        if stage != last_saved["stage"] or (rounded - last_saved["pct"]) >= 1.0:
+            last_saved["pct"] = rounded
+            last_saved["stage"] = stage
+            job.progress_pct = rounded
+            job.progress_stage = stage
+            app.store.save_job(job)
+
     try:
         artifacts = await app.pipeline.render_job(
             job_id=job.job_id,
@@ -95,8 +108,11 @@ async def render_edit_job(app: AppContext, job_id: str) -> dict[str, Any]:
             operations=parsed_ops,
             output_profile=job.output_profile,
             watermark_sources=watermark_sources,
+            progress_cb=_on_progress,
         )
         job.artifacts = artifacts
+        job.progress_pct = 100.0
+        job.progress_stage = "Complete"
         job.status = JobStatus.READY_FOR_REVIEW
         app.store.save_job(job)
         app.store.log_activity(

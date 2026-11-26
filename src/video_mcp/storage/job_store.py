@@ -57,6 +57,8 @@ class JobStore:
                     operations_json TEXT NOT NULL,
                     output_profile TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    progress_pct REAL NOT NULL DEFAULT 0.0,
+                    progress_stage TEXT,
                     artifacts_json TEXT NOT NULL,
                     approval_id TEXT,
                     publish_records_json TEXT NOT NULL,
@@ -95,6 +97,16 @@ class JobStore:
                 );
                 """
             )
+            # Safe migration for existing databases created before progress columns
+            existing_cols = {
+                r["name"] for r in self._conn.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "progress_pct" not in existing_cols:
+                self._conn.execute(
+                    "ALTER TABLE jobs ADD COLUMN progress_pct REAL NOT NULL DEFAULT 0.0"
+                )
+            if "progress_stage" not in existing_cols:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN progress_stage TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -178,15 +190,18 @@ class JobStore:
                 """
                 INSERT INTO jobs (
                     job_id, title, source_ids_json, operations_json,
-                    output_profile, status, artifacts_json, approval_id,
-                    publish_records_json, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    output_profile, status, progress_pct, progress_stage,
+                    artifacts_json, approval_id, publish_records_json, error,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     title=excluded.title,
                     source_ids_json=excluded.source_ids_json,
                     operations_json=excluded.operations_json,
                     output_profile=excluded.output_profile,
                     status=excluded.status,
+                    progress_pct=excluded.progress_pct,
+                    progress_stage=excluded.progress_stage,
                     artifacts_json=excluded.artifacts_json,
                     approval_id=excluded.approval_id,
                     publish_records_json=excluded.publish_records_json,
@@ -200,6 +215,8 @@ class JobStore:
                     json.dumps(job.operations),
                     job.output_profile.value,
                     job.status.value,
+                    job.progress_pct,
+                    job.progress_stage,
                     json.dumps([a.model_dump() for a in job.artifacts]),
                     job.approval_id,
                     json.dumps(job.publish_records),
@@ -239,6 +256,8 @@ class JobStore:
             operations=json.loads(row["operations_json"]),
             output_profile=OutputProfile(row["output_profile"]),
             status=JobStatus(row["status"]),
+            progress_pct=float(row["progress_pct"] or 0.0),
+            progress_stage=row["progress_stage"],
             artifacts=[RenderedArtifact(**a) for a in json.loads(row["artifacts_json"])],
             approval_id=row["approval_id"],
             publish_records=json.loads(row["publish_records_json"]),

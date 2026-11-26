@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -120,13 +121,77 @@ class FFmpegRunner:
             ),
         }
 
-    async def run_ffmpeg(self, args: list[str], timeout: int | None = None) -> None:
-        """Execute an ffmpeg command with `-y -hide_banner -loglevel error`."""
+    async def run_ffmpeg(
+        self,
+        args: list[str],
+        timeout: int | None = None,
+        progress_cb: Callable[[float], None] | None = None,
+        duration_sec: float | None = None,
+    ) -> None:
+        """Execute an ffmpeg command, optionally streaming 0..1 progress via `-progress pipe:1`."""
         self.ensure_binaries()
-        cmd = [self.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", *args]
-        _, stderr, rc = await self._exec(cmd, timeout=timeout or self.timeout_sec)
+        effective_timeout = timeout or self.timeout_sec
+        if progress_cb is not None and duration_sec and duration_sec > 0:
+            cmd = [
+                self.ffmpeg_bin,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostats",
+                "-progress",
+                "pipe:1",
+                *args,
+            ]
+            stderr, rc = await self._exec_with_progress(
+                cmd, timeout=effective_timeout, duration_sec=duration_sec, progress_cb=progress_cb
+            )
+        else:
+            cmd = [self.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", *args]
+            _, stderr, rc = await self._exec(cmd, timeout=effective_timeout)
         if rc != 0:
             raise FFmpegError(f"ffmpeg failed (exit {rc}): {stderr}", rc, stderr)
+
+    async def _exec_with_progress(
+        self,
+        cmd: list[str],
+        timeout: int,
+        duration_sec: float,
+        progress_cb: Callable[[float], None],
+    ) -> tuple[str, int]:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        total_us = max(1.0, duration_sec * 1_000_000.0)
+
+        async def _read_progress() -> None:
+            assert proc.stdout is not None
+            while True:
+                line_bytes = await proc.stdout.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if line.startswith("out_time_us="):
+                    raw = line.split("=", 1)[1].strip()
+                    if raw.isdigit():
+                        progress_cb(min(1.0, max(0.0, int(raw) / total_us)))
+                elif line == "progress=end":
+                    progress_cb(1.0)
+
+        try:
+            _, stderr_bytes = await asyncio.wait_for(
+                asyncio.gather(_read_progress(), proc.stderr.read() if proc.stderr else asyncio.sleep(0)),
+                timeout=timeout,
+            )
+            rc = await asyncio.wait_for(proc.wait(), timeout=10)
+        except TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise FFmpegError(f"Command timed out after {timeout}s: {cmd[0]}") from exc
+        stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+        return stderr[-2000:], rc or 0
 
     async def _exec(self, cmd: list[str], timeout: int) -> tuple[bytes, str, int]:
         proc = await asyncio.create_subprocess_exec(

@@ -288,6 +288,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <script>
     let selectedJobId = null;
     let lastInspectedSig = null;
+    let hasActiveRender = false;
 
     function showToast(msg) {
       const el = document.getElementById("toast");
@@ -430,15 +431,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted);">No jobs yet. Use MCP tools to ingest &amp; create a job.</td></tr>`;
         return;
       }
-      tbody.innerHTML = jobs.map(j => `
+      tbody.innerHTML = jobs.map(j => {
+        const pct = Math.round(j.progress_pct || 0);
+        const isRendering = j.status === "rendering";
+        const progressHtml = isRendering
+          ? `<div style="margin-top:5px;min-width:130px;"><div style="height:6px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--accent);transition:width 0.25s;"></div></div><div class="mono" style="font-size:11px;color:var(--accent);margin-top:2px;">${pct}% · ${j.progress_stage || "Rendering"}</div></div>`
+          : (pct > 0 ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">${pct}%</div>` : "");
+        return `
         <tr class="clickable" onclick="selectJob('${j.job_id}')">
           <td><strong>${j.title}</strong><div class="mono" style="color:var(--muted)">${j.job_id}</div></td>
           <td class="mono">${j.output_profile}</td>
-          <td><span class="badge b-${j.status}">${j.status.replaceAll("_", " ")}</span></td>
+          <td><span class="badge b-${j.status}">${j.status.replaceAll("_", " ")}</span>${progressHtml}</td>
           <td>${(j.operations || []).length}</td>
           <td class="mono">${fmtTime(j.updated_at)}</td>
-        </tr>
-      `).join("");
+        </tr>`;
+      }).join("");
+      hasActiveRender = jobs.some(j => j.status === "rendering");
     }
 
     function renderActivity(events) {
@@ -474,7 +482,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function renderInspector(job) {
-      const sig = `${job.job_id}:${job.status}:${job.updated_at}:${(job.artifacts || []).length}`;
+      const sig = `${job.job_id}:${job.status}:${job.progress_pct}:${job.progress_stage}:${job.updated_at}:${(job.artifacts || []).length}`;
       if (sig === lastInspectedSig) return;
       lastInspectedSig = sig;
       const card = document.getElementById("inspector-card");
@@ -507,6 +515,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           ${job.approval_id ? `<span class="mono">Approval: ${job.approval_id}</span>` : ""}
           ${actions.join("")}
         </div>
+        ${job.status === "rendering" ? `<div style="margin-bottom:12px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>${job.progress_stage || "Rendering"}...</span><span class="mono">${Math.round(job.progress_pct || 0)}%</span></div><div style="height:8px;background:var(--panel-2);border-radius:999px;overflow:hidden;"><div style="height:100%;width:${Math.round(job.progress_pct || 0)}%;background:var(--accent);transition:width 0.25s;"></div></div></div>` : ""}
         ${job.error ? `<div style="color:var(--red);margin-bottom:10px;">Error: ${job.error}</div>` : ""}
         <div><strong>Artifacts (${(job.artifacts || []).length}):</strong></div>
         <ul>
@@ -727,6 +736,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     evtSource.onerror = () => {
       document.getElementById("conn-label").textContent = "POLLING";
     };
+    setInterval(() => {
+      if (hasActiveRender) refreshAll();
+    }, 1000);
     setInterval(refreshAll, 3000);
   </script>
 </body>

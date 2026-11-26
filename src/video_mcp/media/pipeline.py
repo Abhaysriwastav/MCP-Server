@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -140,23 +141,36 @@ class VideoPipeline:
         operations: list[EditOperation],
         output_profile: OutputProfile,
         watermark_sources: dict[str, SourceAsset] | None = None,
+        progress_cb: Callable[[float, str], None] | None = None,
     ) -> list[RenderedArtifact]:
         """Run the full editing pipeline for a job and return rendered media + metadata artifacts."""
         if not sources:
             raise ValueError("At least one source asset is required to render a job.")
+
+        def _report(pct: float, stage: str) -> None:
+            if progress_cb is not None:
+                progress_cb(min(100.0, max(0.0, pct)), stage)
+
+        def _sub_progress(start_pct: float, end_pct: float, stage: str) -> Callable[[float], None]:
+            span = end_pct - start_pct
+            return lambda frac: _report(start_pct + span * frac, stage)
 
         job_dir = self.workspace_dir / "renders" / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         thumb_dir = self.workspace_dir / "thumbnails" / job_id
         thumb_dir.mkdir(parents=True, exist_ok=True)
 
+        _report(2.0, "Preparing source")
         # Step 1: Prepare base input (single clip or concatenated multi-clip)
         if len(sources) == 1:
             base_input = Path(sources[0].local_path)
             has_audio = bool(sources[0].probe.get("has_audio", False))
+            base_duration = float(sources[0].probe.get("duration_sec") or 0.0)
         else:
             base_input = job_dir / "concat_base.mp4"
+            _report(5.0, "Concatenating clips")
             has_audio = await self._concat_sources(sources, base_input)
+            base_duration = sum(float(s.probe.get("duration_sec") or 0.0) for s in sources)
 
         # Step 2: Separate auto_caption from pre-caption edit operations so that
         # trim/concat/speed run first, then transcription & SRT generation run on
@@ -168,12 +182,15 @@ class VideoPipeline:
 
         if pre_caption_ops:
             pre_caption_path = job_dir / ("pre_caption.mp4" if caption_ops else "master_edited.mp4")
+            _report(10.0, "Applying edits")
             await self._apply_operations(
                 input_path=base_input,
                 output_path=pre_caption_path,
                 operations=pre_caption_ops,
                 has_audio=has_audio,
                 watermark_sources=watermark_sources or {},
+                progress_cb=_sub_progress(10.0, 35.0, "Applying edits"),
+                duration_sec=base_duration or None,
             )
         else:
             pre_caption_path = base_input
@@ -182,9 +199,11 @@ class VideoPipeline:
             if self.transcriber is None:
                 raise RuntimeError("AutoCaptionOp requested but Transcriber is not configured.")
             cap_op = caption_ops[-1]
+            _report(35.0, "Transcribing audio (Whisper)")
             segments = await self.transcriber.transcribe_media(
                 pre_caption_path, word_timestamps=True
             )
+            _report(45.0, "Generating captions")
             transcript_path = job_dir / "transcript.json"
             transcript_path.write_text(
                 json.dumps([s.model_dump() for s in segments], indent=2),
@@ -217,6 +236,8 @@ class VideoPipeline:
 
             master_path = job_dir / "master_edited.mp4"
             pre_probe = await self.runner.probe(pre_caption_path)
+            pre_dur = float(pre_probe.get("duration_sec") or base_duration or 0.0)
+            _report(48.0, "Burning captions")
             await self._burn_subtitles_only(
                 input_path=pre_caption_path,
                 output_path=master_path,
@@ -224,11 +245,14 @@ class VideoPipeline:
                 has_audio=bool(pre_probe.get("has_audio", has_audio)),
                 font_size=cap_op.font_size,
                 margin_v=cap_op.margin_v,
+                progress_cb=_sub_progress(48.0, 68.0, "Burning captions"),
+                duration_sec=pre_dur or None,
             )
         else:
             master_path = pre_caption_path
 
         master_probe = await self.runner.probe(master_path)
+        master_dur = float(master_probe.get("duration_sec") or base_duration or 0.0)
 
         # Step 3: Export requested output profile(s)
         targets: list[tuple[str, str, int, int]] = []
@@ -238,10 +262,25 @@ class VideoPipeline:
             targets.append(("video_9x16", "vertical_9x16.mp4", 1080, 1920))
 
         rendition_probes: dict[str, Any] = {"master": master_probe, "renditions": {}}
+        export_start = 68.0 if (pre_caption_ops or caption_ops) else 10.0
+        export_end = 97.0
+        step_span = (export_end - export_start) / max(1, len(targets))
 
-        for kind, filename, w, h in targets:
+        for idx, (kind, filename, w, h) in enumerate(targets):
+            stage_label = f"Exporting {w}x{h}"
+            s_pct = export_start + idx * step_span
+            e_pct = s_pct + step_span
+            _report(s_pct, stage_label)
             out_path = job_dir / filename
-            await self._export_rendition(master_path, out_path, w, h, master_probe["has_audio"])
+            await self._export_rendition(
+                master_path,
+                out_path,
+                w,
+                h,
+                master_probe["has_audio"],
+                progress_cb=_sub_progress(s_pct, e_pct, stage_label),
+                duration_sec=master_dur or None,
+            )
             probe_data = await self.runner.probe(out_path)
             rendition_probes["renditions"][kind] = probe_data
             artifacts.append(
@@ -264,6 +303,8 @@ class VideoPipeline:
                     metadata={"for_rendition": kind, "width": w, "height": h},
                 )
             )
+
+        _report(98.0, "Writing metadata manifest")
 
         # Step 4: Write structured probe & manifest JSON artifacts
         probe_json_path = job_dir / "probe.json"
@@ -383,6 +424,8 @@ class VideoPipeline:
         operations: list[EditOperation],
         has_audio: bool,
         watermark_sources: dict[str, SourceAsset],
+        progress_cb: Callable[[float], None] | None = None,
+        duration_sec: float | None = None,
     ) -> None:
         """Compile EditOperation list into an FFmpeg filtergraph and render master_edited.mp4."""
         pre_trim: list[str] = []
@@ -512,7 +555,7 @@ class VideoPipeline:
                 str(output_path),
             ]
         )
-        await self.runner.run_ffmpeg(args)
+        await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
 
     async def _burn_subtitles_only(
         self,
@@ -522,6 +565,8 @@ class VideoPipeline:
         has_audio: bool,
         font_size: int = 20,
         margin_v: int = 55,
+        progress_cb: Callable[[float], None] | None = None,
+        duration_sec: float | None = None,
     ) -> None:
         if self.runner.has_filter("subtitles"):
             style = _subtitle_force_style(font_size=font_size, margin_v=margin_v)
@@ -544,7 +589,7 @@ class VideoPipeline:
                 "+faststart",
                 str(output_path),
             ]
-            await self.runner.run_ffmpeg(args)
+            await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
             return
 
         await self._burn_srt_with_pillow_overlay(
@@ -553,6 +598,8 @@ class VideoPipeline:
             srt_path=srt_path,
             has_audio=has_audio,
             margin_v=margin_v,
+            progress_cb=progress_cb,
+            duration_sec=duration_sec,
         )
 
     async def _burn_srt_with_pillow_overlay(
@@ -562,6 +609,8 @@ class VideoPipeline:
         srt_path: Path,
         has_audio: bool,
         margin_v: int = 55,
+        progress_cb: Callable[[float], None] | None = None,
+        duration_sec: float | None = None,
     ) -> None:
         """Render SRT cues as transparent PNGs with Pillow and overlay via FFmpeg."""
         cues = _parse_srt_cues(srt_path.read_text(encoding="utf-8"))
@@ -631,7 +680,8 @@ class VideoPipeline:
         # Overlay cues in batches of 25 to keep FFmpeg filtergraph compact
         current_in = input_path
         batch_size = 25
-        for b_idx in range(0, len(cue_pngs), batch_size):
+        total_batches = max(1, (len(cue_pngs) + batch_size - 1) // batch_size)
+        for batch_num, b_idx in enumerate(range(0, len(cue_pngs), batch_size)):
             batch = cue_pngs[b_idx : b_idx + batch_size]
             is_last = b_idx + batch_size >= len(cue_pngs)
             batch_out = output_path if is_last else (cue_dir / f"batch_{b_idx}.mp4")
@@ -666,11 +716,23 @@ class VideoPipeline:
                 "+faststart",
                 str(batch_out),
             ]
-            await self.runner.run_ffmpeg(args)
+            batch_cb = (
+                (lambda f, bn=batch_num: progress_cb((bn + f) / total_batches))
+                if progress_cb is not None
+                else None
+            )
+            await self.runner.run_ffmpeg(args, progress_cb=batch_cb, duration_sec=duration_sec)
             current_in = batch_out
 
     async def _export_rendition(
-        self, master_path: Path, output_path: Path, width: int, height: int, has_audio: bool
+        self,
+        master_path: Path,
+        output_path: Path,
+        width: int,
+        height: int,
+        has_audio: bool,
+        progress_cb: Callable[[float], None] | None = None,
+        duration_sec: float | None = None,
     ) -> None:
         vf = _reframe_filter(width, height, mode="crop")
         args = [
@@ -691,7 +753,7 @@ class VideoPipeline:
             "+faststart",
             str(output_path),
         ]
-        await self.runner.run_ffmpeg(args)
+        await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
 
     @staticmethod
     def _make_artifact(
