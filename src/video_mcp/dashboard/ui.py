@@ -975,15 +975,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function computeEtaText(j) {
       const pct = j.progress_pct || 0;
       const started = j.render_started_at ? Date.parse(j.render_started_at) : null;
+      const updated = j.updated_at ? Date.parse(j.updated_at) : null;
       const elapsedSec = started ? Math.max(0, (Date.now() - started) / 1000) : null;
-      let etaSec = j.eta_sec;
-      if ((etaSec === null || etaSec === undefined) && elapsedSec !== null && pct >= 2 && pct < 100) {
-        etaSec = elapsedSec * (100 - pct) / pct;
+      const sinceUpdateSec = updated ? Math.max(0, (Date.now() - updated) / 1000) : 0;
+
+      let etaSec = null;
+      if (pct >= 2 && pct < 100) {
+        const dynamicEta = elapsedSec !== null ? (elapsedSec * (100 - pct) / pct) : null;
+        if (j.eta_sec !== null && j.eta_sec !== undefined) {
+          const countedDown = j.eta_sec - sinceUpdateSec;
+          etaSec = countedDown >= 2 ? countedDown : dynamicEta;
+        } else {
+          etaSec = dynamicEta;
+        }
       }
       const parts = [];
       if (elapsedSec !== null) parts.push(`elapsed ${fmtDur(elapsedSec)}`);
       if (etaSec !== null && etaSec !== undefined && pct >= 2) {
-        parts.push(`ETA ~${fmtDur(etaSec)}`);
+        parts.push(`ETA ~${fmtDur(Math.max(1, etaSec))}`);
       } else {
         parts.push("estimating ETA...");
       }

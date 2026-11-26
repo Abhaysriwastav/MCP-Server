@@ -193,14 +193,14 @@ class VideoPipeline:
             pre_caption_path = job_dir / (
                 "pre_caption.mp4" if (caption_ops or voice_ops) else "master_edited.mp4"
             )
-            _report(10.0, "Applying edits")
+            _report(5.0, "Applying edits")
             await self._apply_operations(
                 input_path=base_input,
                 output_path=pre_caption_path,
                 operations=pre_caption_ops,
                 has_audio=has_audio,
                 watermark_sources=watermark_sources or {},
-                progress_cb=_sub_progress(10.0, 30.0, "Applying edits"),
+                progress_cb=_sub_progress(5.0, 15.0, "Applying edits"),
                 duration_sec=base_duration or None,
             )
         else:
@@ -210,7 +210,7 @@ class VideoPipeline:
         if caption_ops or (voice_ops and not voice_ops[-1].script_text):
             if self.transcriber is None:
                 raise RuntimeError("Transcription requested but Transcriber is not configured.")
-            _report(32.0, "Transcribing audio (Whisper)")
+            _report(16.0, "Transcribing audio (Whisper)")
             cached_segments = await self.transcriber.transcribe_media(
                 pre_caption_path, word_timestamps=True
             )
@@ -239,7 +239,7 @@ class VideoPipeline:
                     pre_caption_path, job_dir / "voice_reference.wav"
                 )
 
-            _report(40.0, "Cloning AI voice")
+            _report(30.0, "Cloning AI voice")
             dub_wav = job_dir / "ai_voice_dub.wav"
             await self.voice_cloner.synthesize(
                 text=script_text,
@@ -261,7 +261,7 @@ class VideoPipeline:
             )
 
             voiced_path = job_dir / ("pre_caption_voiced.mp4" if caption_ops else "master_edited.mp4")
-            _report(45.0, "Replacing audio with AI voice")
+            _report(58.0, "Replacing audio with AI voice")
             await self._apply_voice_dub(
                 input_path=pre_caption_path,
                 output_path=voiced_path,
@@ -274,7 +274,7 @@ class VideoPipeline:
         if caption_ops:
             assert cached_segments is not None
             cap_op = caption_ops[-1]
-            _report(48.0, "Generating captions")
+            _report(60.0, "Generating captions")
             transcript_path = job_dir / "transcript.json"
             transcript_path.write_text(
                 json.dumps([s.model_dump() for s in cached_segments], indent=2),
@@ -308,7 +308,7 @@ class VideoPipeline:
             master_path = job_dir / "master_edited.mp4"
             pre_probe = await self.runner.probe(voiced_path)
             pre_dur = float(pre_probe.get("duration_sec") or base_duration or 0.0)
-            _report(50.0, "Burning captions")
+            _report(62.0, "Burning captions")
             await self._burn_subtitles_only(
                 input_path=voiced_path,
                 output_path=master_path,
@@ -316,7 +316,7 @@ class VideoPipeline:
                 has_audio=bool(pre_probe.get("has_audio", has_audio)),
                 font_size=cap_op.font_size,
                 margin_v=cap_op.margin_v,
-                progress_cb=_sub_progress(50.0, 68.0, "Burning captions"),
+                progress_cb=_sub_progress(62.0, 75.0, "Burning captions"),
                 duration_sec=pre_dur or None,
             )
         else:
@@ -333,7 +333,7 @@ class VideoPipeline:
             targets.append(("video_9x16", "vertical_9x16.mp4", 1080, 1920))
 
         rendition_probes: dict[str, Any] = {"master": master_probe, "renditions": {}}
-        export_start = 68.0 if (pre_caption_ops or caption_ops or voice_ops) else 10.0
+        export_start = 75.0 if (pre_caption_ops or caption_ops or voice_ops) else 10.0
         export_end = 97.0
         step_span = (export_end - export_start) / max(1, len(targets))
 
