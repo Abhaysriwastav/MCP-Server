@@ -601,6 +601,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </section>
   </main>
 
+  <footer style="position:relative;z-index:1;max-width:1380px;margin:0 auto 28px;padding:0 26px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:14px 20px;border-radius:14px;background:var(--panel);border:1px solid var(--border);backdrop-filter:blur(14px);box-shadow:0 12px 28px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.08);font-size:12px;color:var(--muted);">
+      <span>Designed and built by <strong style="color:var(--text);">Abhay Sriwastav</strong></span>
+      <span class="mono">Video Automation MCP · <a href="https://github.com/Abhaysriwastav/MCP-Server" target="_blank" style="color:#60a5fa;text-decoration:none;">GitHub</a></span>
+    </div>
+  </footer>
+
   <div class="toast" id="toast"></div>
 
   <script>
