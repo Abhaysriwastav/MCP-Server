@@ -17,14 +17,43 @@ class VoiceCloneError(RuntimeError):
     """Raised when voice cloning fails or required TTS dependencies/credentials are missing."""
 
 
+def _is_cuda_kernel_error(exc: BaseException) -> bool:
+    """Return True when `exc` looks like a CUDA kernel/driver incompatibility error."""
+    msg = str(exc).lower()
+    return any(
+        tok in msg
+        for tok in (
+            "no kernel image",
+            "cuda error",
+            "cublas",
+            "cudnn",
+            "acceleratorerror",
+            "cuda driver",
+        )
+    )
+
+
+def _torch_cuda_usable(torch_mod: Any) -> bool:
+    """Verify CUDA works on this GPU architecture via a tiny tensor op."""
+    try:
+        if not torch_mod.cuda.is_available():
+            return False
+        if hasattr(torch_mod, "zeros"):
+            probe = torch_mod.zeros(1, device="cuda")
+            _ = (probe + 1).item()
+        return True
+    except Exception:
+        return False
+
+
 def _resolve_torch_device(device: str) -> str:
-    """Resolve 'auto' to 'cuda:0' when CUDA is available, else 'cpu'."""
+    """Resolve 'auto' to 'cuda:0' when CUDA is usable, else 'cpu'."""
     raw = device.strip()
     if raw.lower() == "auto":
         try:
             import torch  # type: ignore[import-not-found]
 
-            return "cuda:0" if torch.cuda.is_available() else "cpu"
+            return "cuda:0" if _torch_cuda_usable(torch) else "cpu"
         except Exception:
             return "cpu"
     return raw
@@ -38,11 +67,13 @@ class VoiceCloner:
         self.runner = runner
         self._lock = threading.RLock()
         self._tts: Any = None
+        self._coqui_device: str = "cpu"
         self._omnivoice: Any = None
+        self._omnivoice_device: str = "cpu"
 
-    def _get_omnivoice(self) -> Any:
+    def _get_omnivoice(self, force_cpu: bool = False) -> Any:
         with self._lock:
-            if self._omnivoice is not None:
+            if self._omnivoice is not None and not force_cpu:
                 return self._omnivoice
             try:
                 import torch  # type: ignore[import-not-found]
@@ -53,19 +84,32 @@ class VoiceCloner:
                     "pip install omnivoice (or set VIDEO_MCP_VOICE_PROVIDER=coqui)."
                 ) from exc
 
-            device = _resolve_torch_device(self.settings.omnivoice_device)
+            device = "cpu" if force_cpu else _resolve_torch_device(self.settings.omnivoice_device)
             dtype = torch.float16 if device.startswith("cuda") else torch.float32
-            self._omnivoice = OmniVoice.from_pretrained(
-                self.settings.omnivoice_model,
-                device_map=device,
-                dtype=dtype,
-                load_asr=True,
-            )
+            try:
+                self._omnivoice = OmniVoice.from_pretrained(
+                    self.settings.omnivoice_model,
+                    device_map=device,
+                    dtype=dtype,
+                    load_asr=True,
+                )
+            except Exception as exc:
+                if device.startswith("cuda") and _is_cuda_kernel_error(exc):
+                    device = "cpu"
+                    self._omnivoice = OmniVoice.from_pretrained(
+                        self.settings.omnivoice_model,
+                        device_map="cpu",
+                        dtype=torch.float32,
+                        load_asr=True,
+                    )
+                else:
+                    raise
+            self._omnivoice_device = device
             return self._omnivoice
 
-    def _get_coqui_tts(self) -> Any:
+    def _get_coqui_tts(self, force_cpu: bool = False) -> Any:
         with self._lock:
-            if self._tts is not None:
+            if self._tts is not None and not force_cpu:
                 return self._tts
             try:
                 from TTS.api import TTS  # type: ignore[import-not-found]
@@ -77,8 +121,14 @@ class VoiceCloner:
                 ) from exc
 
             tts = TTS(self.settings.coqui_model)
-            if _resolve_torch_device("auto").startswith("cuda") and hasattr(tts, "to"):
-                tts = tts.to("cuda")
+            device = "cpu"
+            if not force_cpu and _resolve_torch_device("auto").startswith("cuda") and hasattr(tts, "to"):
+                try:
+                    tts = tts.to("cuda")
+                    device = "cuda"
+                except Exception:
+                    device = "cpu"
+            self._coqui_device = device
             self._tts = tts
             return self._tts
 
@@ -157,7 +207,16 @@ class VoiceCloner:
         if reference_audio_path is not None:
             kwargs["ref_audio"] = str(reference_audio_path)
 
-        audios = model.generate(**kwargs)
+        try:
+            audios = model.generate(**kwargs)
+        except Exception as exc:
+            if self._omnivoice_device.startswith("cuda") and _is_cuda_kernel_error(exc):
+                with self._lock:
+                    self._omnivoice = None
+                model = self._get_omnivoice(force_cpu=True)
+                audios = model.generate(**kwargs)
+            else:
+                raise
         if not audios:
             raise VoiceCloneError("OmniVoice returned empty audio list.")
         sample_rate = int(getattr(model, "sampling_rate", 24000))
@@ -182,7 +241,16 @@ class VoiceCloner:
         }
         if reference_audio_path is not None:
             kwargs["speaker_wav"] = str(reference_audio_path)
-        tts.tts_to_file(**kwargs)
+        try:
+            tts.tts_to_file(**kwargs)
+        except Exception as exc:
+            if self._coqui_device.startswith("cuda") and _is_cuda_kernel_error(exc):
+                with self._lock:
+                    self._tts = None
+                tts = self._get_coqui_tts(force_cpu=True)
+                tts.tts_to_file(**kwargs)
+            else:
+                raise
         if not output_path.is_file():
             raise VoiceCloneError(f"Coqui TTS did not produce output file: {output_path}")
         return output_path

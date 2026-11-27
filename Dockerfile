@@ -1,5 +1,7 @@
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
@@ -46,7 +48,7 @@ COPY src ./src
 
 RUN python --version \
     && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install --no-cache-dir torch torchaudio --index-url ${TORCH_INDEX_URL} \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/workspace /app/workspace/.cache/huggingface

@@ -111,6 +111,12 @@ def _resolve_whisper_device(device: str, compute_type: str) -> tuple[str, str]:
     return resolved_dev, resolved_compute
 
 
+def _is_cuda_error(exc: BaseException) -> bool:
+    """Return True when `exc` indicates a CUDA/cuBLAS/cuDNN runtime or kernel failure."""
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("no kernel image", "cuda", "cublas", "cudnn", "ctranslate2"))
+
+
 class Transcriber:
     """Thread-safe, lazy-cached faster-whisper transcriber."""
 
@@ -118,10 +124,11 @@ class Transcriber:
         self.settings = settings
         self._lock = threading.RLock()
         self._model: Any = None
+        self._active_device: str = "cpu"
 
-    def _get_model(self) -> Any:
+    def _get_model(self, force_cpu: bool = False) -> Any:
         with self._lock:
-            if self._model is not None:
+            if self._model is not None and not force_cpu:
                 return self._model
             try:
                 from faster_whisper import WhisperModel  # type: ignore[import-not-found]
@@ -131,15 +138,30 @@ class Transcriber:
                     "Install with: pip install 'video-automation-mcp[captions]'"
                 ) from exc
 
-            device, compute_type = _resolve_whisper_device(
-                self.settings.whisper_device,
-                self.settings.whisper_compute_type,
-            )
-            self._model = WhisperModel(
-                self.settings.whisper_model,
-                device=device,
-                compute_type=compute_type,
-            )
+            if force_cpu:
+                device, compute_type = "cpu", "int8"
+            else:
+                device, compute_type = _resolve_whisper_device(
+                    self.settings.whisper_device,
+                    self.settings.whisper_compute_type,
+                )
+            try:
+                self._model = WhisperModel(
+                    self.settings.whisper_model,
+                    device=device,
+                    compute_type=compute_type,
+                )
+            except Exception as exc:
+                if device == "cuda" and _is_cuda_error(exc):
+                    device = "cpu"
+                    self._model = WhisperModel(
+                        self.settings.whisper_model,
+                        device="cpu",
+                        compute_type="int8",
+                    )
+                else:
+                    raise
+            self._active_device = device
             return self._model
 
     def _decode_audio_input(self, media_path: Path) -> Any:
@@ -184,20 +206,34 @@ class Transcriber:
             raise TranscriberError(f"Media file not found for transcription: {media_path}")
         model = self._get_model()
         audio_input = self._decode_audio_input(media_path)
-        raw_segments, _info = model.transcribe(
-            audio_input,
-            word_timestamps=word_timestamps,
-            vad_filter=True,
-        )
-        segments_list = list(raw_segments)
-        if not segments_list:
-            # Retry without VAD in case quiet speech or game audio was filtered out
-            raw_segments, _info = model.transcribe(
+
+        def _run_with_model(active_model: Any) -> list[Any]:
+            raw_segments, _info = active_model.transcribe(
                 audio_input,
                 word_timestamps=word_timestamps,
-                vad_filter=False,
+                vad_filter=True,
             )
-            segments_list = list(raw_segments)
+            segs = list(raw_segments)
+            if not segs:
+                # Retry without VAD in case quiet speech or game audio was filtered out
+                raw_segments, _info = active_model.transcribe(
+                    audio_input,
+                    word_timestamps=word_timestamps,
+                    vad_filter=False,
+                )
+                segs = list(raw_segments)
+            return segs
+
+        try:
+            segments_list = _run_with_model(model)
+        except Exception as exc:
+            if self._active_device == "cuda" and _is_cuda_error(exc):
+                with self._lock:
+                    self._model = None
+                model = self._get_model(force_cpu=True)
+                segments_list = _run_with_model(model)
+            else:
+                raise
         results: list[TranscriptSegment] = []
         for seg in segments_list:
             words: list[TranscriptWord] = []
