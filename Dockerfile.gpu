@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
@@ -43,14 +43,20 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt README.md ./
-COPY src ./src
-
 RUN python --version \
     && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch torchaudio --index-url ${TORCH_INDEX_URL} \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --no-deps . \
+    && pip install --no-cache-dir "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128" --index-url ${TORCH_INDEX_URL}
+
+COPY requirements.txt ./
+
+RUN pip install --no-cache-dir --extra-index-url ${TORCH_INDEX_URL} -r requirements.txt
+
+RUN python -c "import torch; flags = (torch._C._cuda_getArchFlags() or '').split(); print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda, 'Archs:', flags); assert torch.version.cuda and torch.version.cuda.startswith('12.8'), f'Expected CUDA 12.8, got {torch.version.cuda}'; assert any('120' in a for a in flags), f'Missing sm_120/compute_120 in {flags}'"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+
+RUN pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/workspace /app/workspace/.cache/huggingface
 
 EXPOSE 8080 8000

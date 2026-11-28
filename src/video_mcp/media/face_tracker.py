@@ -16,6 +16,9 @@ def estimate_face_center_x_sync(video_path: Path, max_samples: int = 12) -> floa
     except ImportError:
         return 0.5
 
+    if not hasattr(cv2, "CascadeClassifier") or not hasattr(cv2, "data"):
+        return 0.5
+
     cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
     detector = cv2.CascadeClassifier(cascade_path)
     if detector.empty():
