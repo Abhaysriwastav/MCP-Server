@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,19 +20,41 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/workspace/.cache/huggingface
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ffmpeg git ca-certificates libglib2.0-0 curl fontconfig fonts-dejavu-core nodejs \
+    && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-venv \
+        python3.11-dev \
+        python3-pip \
+        ffmpeg \
+        git \
+        ca-certificates \
+        libglib2.0-0 \
+        curl \
+        fontconfig \
+        fonts-dejavu-core \
+        nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/venv
+    && python3.11 -m venv /opt/venv
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt README.md ./
+RUN python --version \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128" --index-url https://download.pytorch.org/whl/cu128
+
+COPY requirements.txt ./
+
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt
+
+RUN python -c "import torch; flags = (torch._C._cuda_getArchFlags() or '').split(); print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda, 'Archs:', flags); assert torch.version.cuda and torch.version.cuda.startswith('12.8'), f'Expected CUDA 12.8, got {torch.version.cuda}'; assert any('120' in a for a in flags), f'Missing sm_120/compute_120 in {flags}'"
+
+COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu124 \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --no-deps . \
+RUN pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/workspace /app/workspace/.cache/huggingface
 
 EXPOSE 8080 8000

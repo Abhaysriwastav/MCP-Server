@@ -315,7 +315,6 @@ class SourceResolver:
         sources_dir.mkdir(parents=True, exist_ok=True)
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         out_template = str(sources_dir / f"yt_{url_hash}.%(ext)s")
-        max_bytes = self.settings.effective_max_download_bytes
         max_dur = self.settings.youtube_max_duration_sec
 
         ydl_opts_info: dict[str, object] = {
@@ -339,12 +338,6 @@ class SourceResolver:
                 f"YouTube video duration ({duration}s) exceeds youtube_max_duration_sec ({max_dur}s)"
             )
 
-        est_bytes = info.get("filesize") or info.get("filesize_approx")
-        if isinstance(est_bytes, (int, float)) and est_bytes > max_bytes:
-            raise SourceResolutionError(
-                f"YouTube video size ({int(est_bytes)} bytes) exceeds max download limit ({max_bytes} bytes)"
-            )
-
         ydl_opts_dl: dict[str, object] = {
             "quiet": True,
             "no_warnings": True,
@@ -352,7 +345,6 @@ class SourceResolver:
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
             "outtmpl": out_template,
-            "max_filesize": max_bytes,
         }
 
         def _download() -> Path:
@@ -376,11 +368,6 @@ class SourceResolver:
             raise SourceResolutionError(f"Downloaded YouTube path escaped workspace: {dest}")
 
         size_bytes = dest.stat().st_size
-        if size_bytes > max_bytes:
-            dest.unlink(missing_ok=True)
-            raise SourceResolutionError(
-                f"Downloaded YouTube file ({size_bytes} bytes) exceeds max download limit ({max_bytes} bytes)"
-            )
 
         digest = sha256_file(dest)
         probe_data = await self.runner.probe(dest) if probe_media else {}
