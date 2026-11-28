@@ -139,6 +139,8 @@ class AutoCaptionOp(BaseModel):
     font_color: str = Field(default="white")
     highlight_bg: bool = Field(default=True)
     position: Literal["bottom", "center", "top"] = "bottom"
+    word_highlight: bool = Field(default=False)
+    highlight_color: str = Field(default="yellow")
 
 
 class VoiceCloneOp(BaseModel):
@@ -161,6 +163,7 @@ class RemoveSilencesOp(BaseModel):
 class SmartCropOp(BaseModel):
     op: Literal["smart_crop"] = "smart_crop"
     enabled: bool = True
+    layout: Literal["crop", "blur_bg", "split_screen"] = "crop"
 
 
 class BackgroundMusicOp(BaseModel):

@@ -16,7 +16,7 @@ from video_mcp.media.face_tracker import estimate_face_center_x
 from video_mcp.media.ffmpeg_runner import FFmpegRunner, sha256_file
 from video_mcp.media.job_control import JobControlHandle
 from video_mcp.media.social_kit import generate_social_kit
-from video_mcp.media.transcriber import Transcriber, generate_srt
+from video_mcp.media.transcriber import Transcriber, generate_karaoke_ass, generate_srt
 from video_mcp.media.translator import translate_segments, translate_text
 from video_mcp.media.voice_cloner import VoiceCloner
 from video_mcp.models import (
@@ -152,6 +152,32 @@ def _reframe_filter(
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height}:'{x_expr}':(ih-{height})/2,setsar=1"
+    )
+
+
+def _vertical_layout_filter_complex(
+    width: int, height: int, layout: str, focus_x: float = 0.5
+) -> str:
+    """Return FFmpeg filter_complex string for `blur_bg` or `split_screen` vertical layouts."""
+    if layout == "blur_bg":
+        return (
+            "[0:v]split=2[bg][fg];"
+            f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},gblur=sigma=28,setsar=1[bgblur];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1[fgsc];"
+            "[bgblur][fgsc]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]"
+        )
+    # split_screen: top half = wide gameplay center, bottom half = zoomed face/action crop
+    half_h = height // 2
+    clamped_x = min(1.0, max(0.0, focus_x))
+    x_expr = f"max(0,min(iw-{width},iw*{clamped_x:.4f}-{width / 2:.1f}))"
+    return (
+        "[0:v]split=2[top][bot];"
+        f"[top]scale={width}:{half_h}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{half_h}:(iw-{width})/2:(ih-{half_h})/2,setsar=1[t];"
+        f"[bot]scale={width}:{half_h}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{half_h}:'{x_expr}':(ih-{half_h})/2,setsar=1[b];"
+        "[t][b]vstack=inputs=2,setsar=1[vout]"
     )
 
 
@@ -396,6 +422,22 @@ class VideoPipeline:
                 )
             )
 
+            ass_path: Path | None = None
+            if cap_op.word_highlight:
+                ass_path = job_dir / "captions.ass"
+                generate_karaoke_ass(
+                    segments=cached_segments,
+                    output_ass_path=ass_path,
+                    max_words_per_cue=cap_op.max_words_per_cue or self.default_max_words_per_line,
+                    max_chars_per_cue=cap_op.max_chars_per_cue,
+                    font_size=cap_op.font_size,
+                    margin_v=cap_op.margin_v,
+                    font_color=cap_op.font_color,
+                    highlight_color=cap_op.highlight_color,
+                    highlight_bg=cap_op.highlight_bg,
+                    position=cap_op.position,
+                )
+
             master_path = job_dir / "master_edited.mp4"
             pre_probe = await self.runner.probe(voiced_path)
             pre_dur = float(pre_probe.get("duration_sec") or base_duration or 0.0)
@@ -410,6 +452,7 @@ class VideoPipeline:
                 font_color=cap_op.font_color,
                 highlight_bg=cap_op.highlight_bg,
                 position=cap_op.position,
+                ass_path=ass_path,
                 progress_cb=_sub_progress(62.0, 75.0, "Burning captions"),
                 duration_sec=pre_dur or None,
             )
@@ -452,8 +495,11 @@ class VideoPipeline:
         step_span = (export_end - export_start) / max(1, len(targets))
 
         use_smart_crop = any(op.enabled for op in smart_crop_ops)
+        vertical_layout = smart_crop_ops[-1].layout if smart_crop_ops else "crop"
         face_x = 0.5
-        if use_smart_crop and any(k == "video_9x16" for k, *_ in targets):
+        if use_smart_crop and vertical_layout in ("crop", "split_screen") and any(
+            k == "video_9x16" for k, *_ in targets
+        ):
             _report(74.0, "Tracking speaker face for 9:16")
             face_x = await estimate_face_center_x(master_path)
 
@@ -465,6 +511,7 @@ class VideoPipeline:
             _report(s_pct, stage_label)
             out_path = job_dir / filename
             focus_x = face_x if kind == "video_9x16" else 0.5
+            layout = vertical_layout if kind == "video_9x16" else "crop"
             await self._export_rendition(
                 master_path,
                 out_path,
@@ -472,6 +519,7 @@ class VideoPipeline:
                 h,
                 master_probe["has_audio"],
                 focus_x=focus_x,
+                layout=layout,
                 progress_cb=_sub_progress(s_pct, e_pct, stage_label),
                 duration_sec=master_dur or None,
             )
@@ -896,9 +944,31 @@ class VideoPipeline:
         font_color: str = "white",
         highlight_bg: bool = True,
         position: str = "bottom",
+        ass_path: Path | None = None,
         progress_cb: Callable[[float], None] | None = None,
         duration_sec: float | None = None,
     ) -> None:
+        if ass_path is not None and ass_path.is_file() and (
+            self.runner.has_filter("ass") or self.runner.has_filter("subtitles")
+        ):
+            flt = "ass" if self.runner.has_filter("ass") else "subtitles"
+            vf = f"{flt}=filename='{_escape_filter_path(ass_path)}'"
+            args = [
+                "-i",
+                str(input_path),
+                "-vf",
+                vf,
+                *self.runner.video_encoder_args(preset="medium", crf=18),
+                "-pix_fmt",
+                "yuv420p",
+                *(["-c:a", "copy"] if has_audio else ["-an"]),
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+            await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
+            return
+
         if self.runner.has_filter("subtitles"):
             style = _subtitle_force_style(
                 font_size=font_size,
@@ -1208,23 +1278,42 @@ class VideoPipeline:
         height: int,
         has_audio: bool,
         focus_x: float = 0.5,
+        layout: str = "crop",
         progress_cb: Callable[[float], None] | None = None,
         duration_sec: float | None = None,
     ) -> None:
-        vf = _reframe_filter(width, height, mode="crop", focus_x=focus_x)
-        args = [
-            "-i",
-            str(master_path),
-            "-vf",
-            vf,
-            *self.runner.video_encoder_args(preset="medium", crf=20),
-            "-pix_fmt",
-            "yuv420p",
-            *(["-c:a", "copy"] if has_audio else ["-an"]),
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ]
+        if layout in ("blur_bg", "split_screen"):
+            fc = _vertical_layout_filter_complex(width, height, layout=layout, focus_x=focus_x)
+            args = [
+                "-i",
+                str(master_path),
+                "-filter_complex",
+                fc,
+                "-map",
+                "[vout]",
+                *(["-map", "0:a", "-c:a", "copy"] if has_audio else ["-an"]),
+                *self.runner.video_encoder_args(preset="medium", crf=20),
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        else:
+            vf = _reframe_filter(width, height, mode="crop", focus_x=focus_x)
+            args = [
+                "-i",
+                str(master_path),
+                "-vf",
+                vf,
+                *self.runner.video_encoder_args(preset="medium", crf=20),
+                "-pix_fmt",
+                "yuv420p",
+                *(["-c:a", "copy"] if has_audio else ["-an"]),
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
         await self.runner.run_ffmpeg(args, progress_cb=progress_cb, duration_sec=duration_sec)
 
     @staticmethod

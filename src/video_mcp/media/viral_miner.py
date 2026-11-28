@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 import statistics
 import subprocess
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from video_mcp.media.ffmpeg_runner import FFmpegRunner
 
@@ -518,6 +521,103 @@ def _compute_engagement_grade(view_count: int, like_count: int, comments_analyze
     return "C"
 
 
+async def score_moments_with_llm(
+    segments: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    title: str,
+    query: str | None,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    duration_sec: float,
+    max_clips: int = 6,
+    min_clip_sec: float = 6.0,
+    max_clip_sec: float = 25.0,
+) -> list[dict[str, Any]]:
+    """Optionally call an OpenAI-compatible LLM (Ollama / LM Studio / Gemini / OpenAI) to pick viral moments."""
+    if not base_url or not (segments or comments):
+        return []
+
+    transcript_preview = "\n".join(
+        f"[{float(s.get('start') or 0.0):.1f}s-{float(s.get('end') or 0.0):.1f}s] {str(s.get('text') or '').strip()}"
+        for s in (segments or [])[:120]
+    )
+    comments_preview = "\n".join(
+        f"({int(c.get('likes') or 0)} likes) {str(c.get('text') or '').strip()[:160]}"
+        for c in (comments or [])[:25]
+    )
+    focus_note = f"Focus topic/game: {query}" if query else "Pick the most viral, quotable, or high-energy moments."
+    prompt = (
+        f"You are a viral short-form video editor. Video title: {title} (duration {duration_sec:.1f}s).\n"
+        f"{focus_note}\n"
+        f"Return ONLY a JSON array of up to {max_clips} objects with keys: "
+        f"start_sec (number), end_sec (number), hook_text (string <=60 chars), reason (string), score (0-100).\n"
+        f"Each clip should be {min_clip_sec:.0f} to {max_clip_sec:.0f} seconds.\n\n"
+        f"TOP COMMENTS:\n{comments_preview or 'None'}\n\n"
+        f"TRANSCRIPT:\n{transcript_preview or 'None'}"
+    )
+
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                endpoint,
+                headers=headers,
+                json={
+                    "model": model or "llama3.2",
+                    "temperature": 0.2,
+                    "messages": [
+                        {"role": "system", "content": "Return valid JSON array only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+            )
+            if resp.status_code >= 400:
+                return []
+            body = resp.json()
+            content = str(
+                (((body.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
+            ).strip()
+            if not content:
+                return []
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
+            parsed = json.loads(content)
+            items = parsed.get("moments") if isinstance(parsed, dict) else parsed
+            if not isinstance(items, list):
+                return []
+    except Exception:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for item in items[:max_clips]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            st_raw = float(item.get("start_sec", 0.0))
+            en_raw = float(item.get("end_sec", st_raw + min_clip_sec))
+        except (TypeError, ValueError):
+            continue
+        if duration_sec > 0 and st_raw >= duration_sec:
+            continue
+        st, en = _clamp_window(st_raw, en_raw, duration_sec, min_clip_sec, max_clip_sec)
+        score = float(item.get("score") or 80.0)
+        results.append(
+            {
+                "start_sec": st,
+                "end_sec": en,
+                "raw_score": round(max(5.0, min(35.0, score * 0.3)), 3),
+                "dialogue_text": str(item.get("hook_text") or "").strip(),
+                "reason": str(item.get("reason") or "AI LLM viral pick").strip(),
+                "signal": "llm_pick",
+            }
+        )
+    return results
+
+
 def fuse_viral_moments(
     comment_moments: list[dict[str, Any]],
     heatmap_peaks: list[dict[str, Any]],
@@ -530,6 +630,7 @@ def fuse_viral_moments(
     max_clips: int = 8,
     min_clip_sec: float = 6.0,
     max_clip_sec: float = 25.0,
+    llm_moments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fuse multi-signal candidates into ranked, non-overlapping viral moments + engagement stats."""
     all_cands: list[tuple[str, dict[str, Any]]] = []
@@ -541,6 +642,8 @@ def fuse_viral_moments(
         all_cands.append(("dialogue", d))
     for s in scene_moments:
         all_cands.append(("scene", s))
+    for lm in llm_moments or []:
+        all_cands.append(("llm", lm))
 
     clusters: list[dict[str, Any]] = []
     for kind, cand in all_cands:
@@ -607,6 +710,7 @@ def fuse_viral_moments(
         ss = cl["signal_scores"]
         total = (
             ss.get("comments", 0.0) * 1.8
+            + ss.get("llm", 0.0) * 1.6
             + ss.get("heatmap", 0.0) * 1.1
             + ss.get("dialogue", 0.0) * 1.2
             + ss.get("scene", 0.0) * 0.9
@@ -625,6 +729,7 @@ def fuse_viral_moments(
         "most_replayed": "Most Replayed",
         "catchy_dialogue": "Catchy Dialogue",
         "viral_scene": "High-Action Scene",
+        "llm_pick": "AI LLM Pick",
     }
 
     moments: list[dict[str, Any]] = []

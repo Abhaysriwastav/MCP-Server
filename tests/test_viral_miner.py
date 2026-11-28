@@ -14,15 +14,18 @@ from unittest.mock import AsyncMock, patch
 from video_mcp.config import Settings
 from video_mcp.context import AppContext
 from video_mcp.dashboard.ui import DASHBOARD_HTML
+from video_mcp.media.pipeline import _vertical_layout_filter_complex
+from video_mcp.media.transcriber import generate_karaoke_ass
 from video_mcp.media.viral_miner import (
     fuse_viral_moments,
     mine_catchy_dialogue,
     mine_comment_moments,
     mine_heatmap_peaks,
     parse_comment_timestamps,
+    score_moments_with_llm,
 )
-from video_mcp.models import TranscriptSegment
-from video_mcp.tools import ingest
+from video_mcp.models import TranscriptSegment, TranscriptWord
+from video_mcp.tools import editing, ingest
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
@@ -212,6 +215,146 @@ class TestViralMiner(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+
+    def test_generate_karaoke_ass_highlights_each_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ass_path = Path(tmp) / "karaoke.ass"
+            segs = [
+                TranscriptSegment(
+                    start=0.0,
+                    end=1.2,
+                    text="Trust me bro",
+                    words=[
+                        TranscriptWord(word="Trust", start=0.0, end=0.4),
+                        TranscriptWord(word="me", start=0.4, end=0.7),
+                        TranscriptWord(word="bro", start=0.7, end=1.2),
+                    ],
+                )
+            ]
+            out = generate_karaoke_ass(segs, ass_path, highlight_color="yellow")
+            content = out.read_text(encoding="utf-8")
+            self.assertIn("[V4+ Styles]", content)
+            self.assertIn("{\\c&H0000FFFF&\\fscx112\\fscy112}Trust{\\r} me bro", content)
+            self.assertIn("Trust {\\c&H0000FFFF&\\fscx112\\fscy112}me{\\r} bro", content)
+            self.assertIn("Trust me {\\c&H0000FFFF&\\fscx112\\fscy112}bro{\\r}", content)
+
+    def test_llm_moment_scorer_parses_openai_compatible_response_and_fuses(self) -> None:
+        class FakeResp:
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '[{"start_sec": 12.0, "end_sec": 24.0, "hook_text": "Insane Vice City chase!", "reason": "High tension reveal", "score": 94}]'
+                            }
+                        }
+                    ]
+                }
+
+        class FakeClient:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *args: object, **kwargs: object) -> FakeResp:
+                return FakeResp()
+
+        async def _run() -> None:
+            with patch("video_mcp.media.viral_miner.httpx.AsyncClient", FakeClient):
+                llm_picks = await score_moments_with_llm(
+                    segments=[{"start": 12.0, "end": 18.0, "text": "Hold on, cops are right behind us!"}],
+                    comments=[],
+                    title="GTA VI Trailer",
+                    query="GTA VI",
+                    base_url="http://localhost:11434/v1",
+                    api_key=None,
+                    model="llama3.2",
+                    duration_sec=90.0,
+                )
+            self.assertEqual(len(llm_picks), 1)
+            fused = fuse_viral_moments(
+                comment_moments=[],
+                heatmap_peaks=[],
+                dialogue_moments=[],
+                scene_moments=[],
+                segments=[],
+                youtube_meta=None,
+                title="GTA VI Trailer",
+                duration_sec=90.0,
+                llm_moments=llm_picks,
+            )
+            self.assertEqual(fused["moment_count"], 1)
+            self.assertIn("AI LLM Pick", fused["moments"][0]["signals"])
+
+        asyncio.run(_run())
+
+    @unittest.skipUnless(HAS_FFMPEG, "ffmpeg/ffprobe required")
+    def test_vertical_layouts_blur_bg_and_split_screen(self) -> None:
+        blur_fc = _vertical_layout_filter_complex(1080, 1920, "blur_bg")
+        split_fc = _vertical_layout_filter_complex(1080, 1920, "split_screen", focus_x=0.3)
+        self.assertIn("gblur=sigma=28", blur_fc)
+        self.assertIn("vstack=inputs=2", split_fc)
+
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                clip = tmp_path / "wide.mp4"
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-f", "lavfi", "-i", "testsrc=duration=1.2:size=640x360:rate=24",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        str(clip),
+                    ],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                cfg = Settings(
+                    workspace_dir=tmp_path / "ws",
+                    db_path=tmp_path / "ws" / "video.db",
+                    release_dir=tmp_path / "rel",
+                    allowed_local_roots=[tmp_path],
+                )
+                app = AppContext.create(cfg)
+                try:
+                    sid = (await ingest.ingest_source(app, str(clip)))["source"]["source_id"]
+                    for layout in ("blur_bg", "split_screen"):
+                        created = editing.create_edit_job(
+                            app,
+                            title=f"Layout {layout}",
+                            source_ids=[sid],
+                            operations=[{"op": "smart_crop", "enabled": True, "layout": layout}],
+                            output_profile="vertical_9x16",
+                        )
+                        rendered = await editing.render_edit_job(app, created["job"]["job_id"])
+                        v_art = next(a for a in rendered["job"]["artifacts"] if a["kind"] == "video_9x16")
+                        self.assertEqual(v_art["metadata"]["width"], 1080)
+                        self.assertEqual(v_art["metadata"]["height"], 1920)
+                finally:
+                    app.close()
+
+        asyncio.run(_run())
+
+    def test_dashboard_contains_openshorts_inspired_controls(self) -> None:
+        for token in (
+            "builder-layout",
+            "builder-cap-karaoke",
+            "loadBuilderTranscript",
+            "builder-transcript-wrap",
+            "viral-layout",
+            "viral-karaoke",
+            "cfg-llm-url",
+        ):
+            self.assertIn(token, DASHBOARD_HTML)
 
 
 if __name__ == "__main__":

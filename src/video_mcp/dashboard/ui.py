@@ -648,6 +648,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="both">Both (16:9 + 9:16)</option>
               <option value="landscape_16x9">Landscape 16:9</option>
             </select>
+            <select id="viral-layout" title="9:16 Vertical Layout">
+              <option value="crop">9:16: Face-Track Crop</option>
+              <option value="blur_bg">9:16: Blurred BG (Full Gameplay)</option>
+              <option value="split_screen">9:16: Split-Screen</option>
+            </select>
             <input type="number" id="dialogue-padding" value="2" min="0" max="15" step="0.5" style="width:72px;" title="Dialogue search buffer seconds" />
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;">
@@ -655,6 +660,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-scene-detect" checked /><span>Detect Action Scenes</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-hook" checked /><span>Burn Hook Overlay</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-caption" checked /><span>Auto-Caption</span></label>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-karaoke" checked /><span>Word Highlight (Karaoke)</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-facecrop" checked /><span>Smart 9:16 Face-Track</span></label>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="viral-norm" checked /><span>Audio Normalize</span></label>
           </div>
@@ -694,7 +700,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="setBuilderTime('start')">Set Start = Current</button>
                 <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="setBuilderTime('end')">Set End = Current</button>
                 <button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px;" onclick="previewBuilderTrim()">Play Trim</button>
+                <button type="button" class="btn btn-sec" id="builder-load-transcript-btn" style="padding:4px 10px;font-size:12px;" onclick="loadBuilderTranscript()">Load Clickable Transcript</button>
               </div>
+            </div>
+            <div id="builder-transcript-wrap" style="display:none;max-height:190px;overflow-y:auto;padding:10px 12px;background:rgba(8,13,28,0.92);border-top:1px solid var(--border);font-size:12px;line-height:1.7;">
+              <div id="builder-transcript-list"></div>
             </div>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
@@ -771,6 +781,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </select>
             <label style="display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;">Size: <input type="number" id="builder-cap-size" value="20" min="12" max="48" step="2" style="width:65px;" onchange="updateBuilderOverlays()" /></label>
             <label style="display:inline-flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="builder-cap-bg" checked onchange="updateBuilderOverlays()" /><span>Box BG</span></label>
+            <label style="display:inline-flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:12px;"><input type="checkbox" id="builder-cap-karaoke" checked onchange="updateBuilderOverlays()" /><span>Word Highlight</span></label>
+            <select id="builder-cap-hilite" onchange="updateBuilderOverlays()" title="Active Word Highlight Color">
+              <option value="yellow" selected>Pop: Yellow</option>
+              <option value="lime">Pop: Lime</option>
+              <option value="cyan">Pop: Cyan</option>
+              <option value="gold">Pop: Gold</option>
+            </select>
+            <select id="builder-layout" title="9:16 Vertical Layout">
+              <option value="crop">9:16: Face-Track Crop</option>
+              <option value="blur_bg">9:16: Blurred BG (Full Gameplay)</option>
+              <option value="split_screen">9:16: Split-Screen</option>
+            </select>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;"><input type="checkbox" id="builder-norm" checked /><span>Audio Normalize (-14 LUFS)</span></label>
@@ -866,6 +888,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <div>
                 <label>Download Timeout (seconds)</label>
                 <input type="number" id="cfg-dl-timeout" min="5" />
+              </div>
+              <div>
+                <label>LLM Base URL (Ollama / LM Studio / Gemini / OpenAI)</label>
+                <input type="text" id="cfg-llm-url" placeholder="http://localhost:11434/v1" />
+              </div>
+              <div>
+                <label>LLM Model</label>
+                <input type="text" id="cfg-llm-model" placeholder="llama3.2" />
+              </div>
+              <div>
+                <label>LLM API Key (optional for local Ollama)</label>
+                <input type="password" id="cfg-llm-key" placeholder="Leave blank to keep existing" />
               </div>
             </div>
             <div style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
@@ -1212,6 +1246,72 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       video.play();
     }
 
+    function seekBuilderVideo(sec, autoPlay) {
+      const video = document.getElementById("builder-preview-video");
+      if (!video) return;
+      video.currentTime = Math.max(0, Number(sec || 0));
+      if (autoPlay) video.play();
+    }
+
+    function setBuilderBound(which, sec) {
+      const val = Number(Number(sec || 0).toFixed(1));
+      document.getElementById(which === "start" ? "builder-start" : "builder-end").value = val;
+      showToast(`Set ${which} to ${val}s`);
+    }
+
+    async function loadBuilderTranscript() {
+      const sourceId = document.getElementById("builder-source").value;
+      const btn = document.getElementById("builder-load-transcript-btn");
+      const wrap = document.getElementById("builder-transcript-wrap");
+      const list = document.getElementById("builder-transcript-list");
+      if (!sourceId) {
+        showToast("Select a source video first.");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Transcribing...";
+      try {
+        const res = await fetch(`/api/sources/${sourceId}/transcribe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(`Transcript error: ${data.error || res.status}`);
+          return;
+        }
+        const segs = data.segments || [];
+        wrap.style.display = "block";
+        if (!segs.length) {
+          list.innerHTML = `<div style="color:var(--muted);">No spoken words detected in this video.</div>`;
+          return;
+        }
+        list.innerHTML = segs.map((seg) => {
+          const st = Number(seg.start || 0).toFixed(1);
+          const en = Number(seg.end || 0).toFixed(1);
+          const words = (seg.words && seg.words.length)
+            ? seg.words.map((w) => {
+                const ws = Number(w.start || seg.start || 0).toFixed(2);
+                return `<span onclick="seekBuilderVideo(${ws}, true)" style="cursor:pointer;padding:1px 3px;border-radius:4px;" title="Jump to ${ws}s">${escHtml(w.word)}</span>`;
+              }).join(" ")
+            : `<span onclick="seekBuilderVideo(${st}, true)" style="cursor:pointer;">${escHtml(seg.text)}</span>`;
+          return `<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;border-bottom:1px solid rgba(148,163,184,0.08);padding-bottom:3px;">
+            <span class="mono" style="color:var(--cyan);min-width:86px;cursor:pointer;" onclick="seekBuilderVideo(${st}, true)">[${st}s-${en}s]</span>
+            <span style="flex:1;">${words}</span>
+            <button type="button" class="btn btn-sec" style="padding:1px 6px;font-size:10px;" onclick="setBuilderBound('start', ${st})">In</button>
+            <button type="button" class="btn btn-sec" style="padding:1px 6px;font-size:10px;" onclick="setBuilderBound('end', ${en})">Out</button>
+          </div>`;
+        }).join("");
+        showToast(`Loaded ${segs.length} clickable transcript segment(s)`);
+      } catch (err) {
+        showToast(String(err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Load Clickable Transcript";
+      }
+    }
+
     (() => {
       const video = document.getElementById("builder-preview-video");
       const readout = document.getElementById("builder-time-readout");
@@ -1276,7 +1376,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           position: document.getElementById("builder-hook-pos").value,
         });
       }
-      if (document.getElementById("builder-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
+      const bLayout = document.getElementById("builder-layout").value || "crop";
+      if (document.getElementById("builder-facecrop").checked || bLayout !== "crop") {
+        ops.push({ op: "smart_crop", enabled: document.getElementById("builder-facecrop").checked, layout: bLayout });
+      }
       const bgmSource = document.getElementById("builder-bgm-source").value;
       if (bgmSource) {
         ops.push({
@@ -1302,6 +1405,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           font_color: document.getElementById("builder-cap-color").value,
           position: document.getElementById("builder-cap-pos").value,
           highlight_bg: document.getElementById("builder-cap-bg").checked,
+          word_highlight: document.getElementById("builder-cap-karaoke").checked,
+          highlight_color: document.getElementById("builder-cap-hilite").value,
         });
       }
 
@@ -1591,7 +1696,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             min_clip_sec: Number(document.getElementById("viral-min-sec").value || 6),
             max_clip_sec: Number(document.getElementById("viral-max-sec").value || 25),
             auto_caption: document.getElementById("viral-caption").checked,
+            word_highlight: document.getElementById("viral-karaoke").checked,
             smart_crop: document.getElementById("viral-facecrop").checked,
+            vertical_layout: document.getElementById("viral-layout").value || "crop",
             audio_normalize: document.getElementById("viral-norm").checked,
             add_hook_overlay: document.getElementById("viral-hook").checked,
             include_scene_detection: document.getElementById("viral-scene-detect").checked,
@@ -1626,8 +1733,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (document.getElementById("viral-hook").checked && m.hook_text) {
         ops.push({ op: "text_overlay", text: String(m.hook_text).slice(0, 120), position: "top" });
       }
-      if (document.getElementById("viral-facecrop").checked) ops.push({ op: "smart_crop", enabled: true });
-      if (document.getElementById("viral-caption").checked) ops.push({ op: "auto_caption" });
+      const vLayout = document.getElementById("viral-layout").value || "crop";
+      if (document.getElementById("viral-facecrop").checked || vLayout !== "crop") {
+        ops.push({ op: "smart_crop", enabled: document.getElementById("viral-facecrop").checked, layout: vLayout });
+      }
+      if (document.getElementById("viral-caption").checked) {
+        ops.push({ op: "auto_caption", word_highlight: document.getElementById("viral-karaoke").checked });
+      }
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1973,6 +2085,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById("cfg-ffmpeg-timeout").value = cfg.ffmpeg_timeout_sec;
       document.getElementById("cfg-max-dl").value = cfg.max_download_mb;
       document.getElementById("cfg-dl-timeout").value = cfg.download_timeout_sec;
+      document.getElementById("cfg-llm-url").value = cfg.llm_base_url || "";
+      document.getElementById("cfg-llm-model").value = cfg.llm_model || "llama3.2";
+      document.getElementById("cfg-llm-key").value = "";
       document.getElementById("cfg-private-urls").checked = !!cfg.allow_private_urls;
     }
 
@@ -1985,6 +2100,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         ffmpeg_timeout_sec: Number(document.getElementById("cfg-ffmpeg-timeout").value),
         max_download_mb: Number(document.getElementById("cfg-max-dl").value),
         download_timeout_sec: Number(document.getElementById("cfg-dl-timeout").value),
+        llm_base_url: document.getElementById("cfg-llm-url").value.trim() || null,
+        llm_model: document.getElementById("cfg-llm-model").value.trim() || "llama3.2",
+        llm_api_key: document.getElementById("cfg-llm-key").value.trim() || null,
         allow_private_urls: document.getElementById("cfg-private-urls").checked,
       };
       const res = await fetch("/api/config", {

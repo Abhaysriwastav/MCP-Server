@@ -12,6 +12,7 @@ from video_mcp.media.viral_miner import (
     mine_catchy_dialogue,
     mine_comment_moments,
     mine_heatmap_peaks,
+    score_moments_with_llm,
 )
 from video_mcp.models import SourceKind
 from video_mcp.tools import editing
@@ -220,6 +221,22 @@ async def analyze_viral_clips(
             max_clip_sec=max_clip_sec,
         )
 
+    llm_moments: list[dict[str, Any]] = []
+    if app.settings.llm_base_url:
+        llm_moments = await score_moments_with_llm(
+            segments=segments,
+            comments=comments,
+            title=str(yt_meta.get("title") or src.filename),
+            query=query,
+            base_url=app.settings.llm_base_url,
+            api_key=app.settings.llm_api_key,
+            model=app.settings.llm_model,
+            duration_sec=duration_sec,
+            max_clips=max(1, min(10, max_clips)),
+            min_clip_sec=min_clip_sec,
+            max_clip_sec=max_clip_sec,
+        )
+
     fused = fuse_viral_moments(
         comment_moments=comment_moments,
         heatmap_peaks=heatmap_peaks,
@@ -232,6 +249,7 @@ async def analyze_viral_clips(
         max_clips=max(1, min(20, max_clips)),
         min_clip_sec=min_clip_sec,
         max_clip_sec=max_clip_sec,
+        llm_moments=llm_moments,
     )
     app.store.log_activity(
         category="viral_analysis",
@@ -258,7 +276,9 @@ async def extract_viral_clips(
     min_clip_sec: float = 6.0,
     max_clip_sec: float = 25.0,
     auto_caption: bool = True,
+    word_highlight: bool = False,
     smart_crop: bool = True,
+    vertical_layout: str = "crop",
     audio_normalize: bool = True,
     add_hook_overlay: bool = True,
     remove_silences: bool = False,
@@ -302,10 +322,10 @@ async def extract_viral_clips(
                     "position": "top",
                 }
             )
-        if smart_crop:
-            ops.append({"op": "smart_crop", "enabled": True})
+        if smart_crop or vertical_layout != "crop":
+            ops.append({"op": "smart_crop", "enabled": smart_crop, "layout": vertical_layout})
         if auto_caption:
-            ops.append({"op": "auto_caption"})
+            ops.append({"op": "auto_caption", "word_highlight": word_highlight})
 
         title = f"Viral #{idx} [{moment['viral_score']}/100] ({moment['start_sec']}s-{moment['end_sec']}s)"
         created = editing.create_edit_job(

@@ -87,6 +87,105 @@ def generate_srt(
     return output_srt_path
 
 
+_ASS_COLOR_MAP = {
+    "white": "&H00FFFFFF",
+    "yellow": "&H0000FFFF",
+    "cyan": "&H00FFFF00",
+    "lime": "&H0000FF00",
+    "gold": "&H0000D7FF",
+    "orange": "&H0000A5FF",
+}
+
+
+def format_ass_timestamp(seconds: float) -> str:
+    """Format non-negative seconds as ASS `H:MM:SS.cc`."""
+    total_cs = max(0, int(round(seconds * 100)))
+    hours, rem = divmod(total_cs, 360_000)
+    minutes, rem = divmod(rem, 6_000)
+    secs, cs = divmod(rem, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+
+def generate_karaoke_ass(
+    segments: list[TranscriptSegment],
+    output_ass_path: Path,
+    max_words_per_cue: int = 6,
+    max_chars_per_cue: int = 38,
+    font_size: int = 24,
+    margin_v: int = 55,
+    font_color: str = "white",
+    highlight_color: str = "yellow",
+    highlight_bg: bool = True,
+    position: str = "bottom",
+) -> Path:
+    """Generate ASS subtitles with active-word pop highlighting (Submagic/OpenShorts style)."""
+    primary = _ASS_COLOR_MAP.get(font_color.lower(), "&H00FFFFFF")
+    hilite = _ASS_COLOR_MAP.get(highlight_color.lower(), "&H0000FFFF")
+    align = {"bottom": 2, "center": 5, "top": 8}.get(position, 2)
+    border_style = 4 if highlight_bg else 1
+
+    header = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,Arial,{max(14, font_size * 2)},{primary},{hilite},&H00000000,&H99000000,-1,0,0,0,100,100,0,0,{border_style},3,1,{align},40,40,{margin_v * 2},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+
+    word_cues: list[list[TranscriptWord]] = []
+    for seg in segments:
+        words = seg.words if seg.words else _fallback_words_for_segment(seg)
+        if not words:
+            continue
+        buf: list[TranscriptWord] = []
+        buf_len = 0
+        for w in words:
+            token = w.word.strip()
+            if not token:
+                continue
+            projected = buf_len + (1 if buf else 0) + len(token)
+            if buf and (len(buf) >= max_words_per_cue or projected > max_chars_per_cue):
+                word_cues.append(buf)
+                buf = []
+                buf_len = 0
+            buf.append(w)
+            buf_len += (1 if len(buf) > 1 else 0) + len(token)
+        if buf:
+            word_cues.append(buf)
+
+    events: list[str] = []
+    for cue in word_cues:
+        for active_idx, active_word in enumerate(cue):
+            start = max(0.0, active_word.start)
+            end = max(active_word.end, start + 0.08)
+            parts: list[str] = []
+            for idx, w in enumerate(cue):
+                tok = _escape_ass_text(w.word.strip())
+                if idx == active_idx:
+                    parts.append(f"{{\\c{hilite}&\\fscx112\\fscy112}}{tok}{{\\r}}")
+                else:
+                    parts.append(tok)
+            line_text = " ".join(parts)
+            events.append(
+                f"Dialogue: 0,{format_ass_timestamp(start)},{format_ass_timestamp(end)},Default,,0,0,0,,{line_text}"
+            )
+
+    output_ass_path.parent.mkdir(parents=True, exist_ok=True)
+    output_ass_path.write_text("\n".join(header + events) + "\n", encoding="utf-8")
+    return output_ass_path
+
+
 def _resolve_whisper_device(device: str, compute_type: str) -> tuple[str, str]:
     """Resolve 'auto' to CUDA + float16 when available, else CPU + int8."""
     resolved_dev = device.strip().lower()

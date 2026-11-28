@@ -63,6 +63,11 @@ class Settings(BaseModel):
     elevenlabs_api_key: str | None = Field(default=None)
     elevenlabs_voice_id: str | None = Field(default=None)
 
+    # Optional OpenAI-compatible LLM (Ollama / LM Studio / Gemini / OpenAI) for viral moment scoring
+    llm_base_url: str | None = Field(default=None)
+    llm_api_key: str | None = Field(default=None)
+    llm_model: str = Field(default="llama3.2")
+
     release_dir: Path = Field(default=Path("./workspace/releases"))
     webhook_url: str | None = Field(default=None)
 
@@ -123,6 +128,9 @@ class Settings(BaseModel):
             ),
             elevenlabs_api_key=os.getenv("VIDEO_MCP_ELEVENLABS_API_KEY") or None,
             elevenlabs_voice_id=os.getenv("VIDEO_MCP_ELEVENLABS_VOICE_ID") or None,
+            llm_base_url=os.getenv("VIDEO_MCP_LLM_BASE_URL") or None,
+            llm_api_key=os.getenv("VIDEO_MCP_LLM_API_KEY") or None,
+            llm_model=os.getenv("VIDEO_MCP_LLM_MODEL", "llama3.2"),
             release_dir=Path(
                 os.getenv("VIDEO_MCP_RELEASE_DIR", str(release_default))
             ).expanduser().resolve(),

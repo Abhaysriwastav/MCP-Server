@@ -41,6 +41,9 @@ def _serialize_config(app: AppContext) -> dict[str, Any]:
         "max_download_mb": s.max_download_mb,
         "download_timeout_sec": s.download_timeout_sec,
         "allow_private_urls": s.allow_private_urls,
+        "llm_base_url": s.llm_base_url,
+        "llm_model": s.llm_model,
+        "llm_api_key_set": bool(s.llm_api_key),
     }
 
 
@@ -64,6 +67,14 @@ def _apply_config_update(app: AppContext, payload: dict[str, Any]) -> dict[str, 
         s.download_timeout_sec = max(5, int(payload["download_timeout_sec"]))
     if "allow_private_urls" in payload:
         s.allow_private_urls = bool(payload["allow_private_urls"])
+    if "llm_base_url" in payload:
+        s.llm_base_url = str(payload["llm_base_url"]).strip() or None if payload["llm_base_url"] else None
+    if "llm_model" in payload and str(payload["llm_model"]).strip():
+        s.llm_model = str(payload["llm_model"]).strip()
+    if "llm_api_key" in payload and payload["llm_api_key"] is not None:
+        key_val = str(payload["llm_api_key"]).strip()
+        if key_val:
+            s.llm_api_key = key_val
 
     cfg_path = _config_file_path(app)
     serialized = _serialize_config(app)
@@ -368,6 +379,14 @@ def create_dashboard_server(
 
             if path.startswith("/api/sources/"):
                 parts = [p for p in path.removeprefix("/api/sources/").split("/") if p]
+                if len(parts) == 2 and parts[1] == "transcribe":
+                    source_id = parts[0]
+                    try:
+                        res = asyncio.run(ingest.transcribe_source(app, source_id=source_id))
+                        self._send_json(HTTPStatus.OK, res)
+                    except Exception as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
                 if len(parts) == 2 and parts[1] == "find_dialogue":
                     source_id = parts[0]
                     try:
@@ -419,7 +438,9 @@ def create_dashboard_server(
                                 min_clip_sec=float(payload.get("min_clip_sec", 6.0)),
                                 max_clip_sec=float(payload.get("max_clip_sec", 25.0)),
                                 auto_caption=bool(payload.get("auto_caption", True)),
+                                word_highlight=bool(payload.get("word_highlight", False)),
                                 smart_crop=bool(payload.get("smart_crop", True)),
+                                vertical_layout=str(payload.get("vertical_layout") or "crop"),
                                 audio_normalize=bool(payload.get("audio_normalize", True)),
                                 add_hook_overlay=bool(payload.get("add_hook_overlay", True)),
                                 remove_silences=bool(payload.get("remove_silences", False)),
