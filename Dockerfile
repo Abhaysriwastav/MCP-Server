@@ -1,4 +1,10 @@
+<<<<<<< HEAD
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+=======
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+>>>>>>> 3c028d28a8cf6748b6b8c79de50b836241f0f294
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -54,7 +60,15 @@ RUN python -c "import torch; flags = (torch._C._cuda_getArchFlags() or '').split
 COPY pyproject.toml README.md ./
 COPY src ./src
 
+<<<<<<< HEAD
 RUN pip install --no-cache-dir --no-deps . \
+=======
+RUN python --version \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir torch torchaudio --index-url ${TORCH_INDEX_URL} \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps . \
+>>>>>>> 3c028d28a8cf6748b6b8c79de50b836241f0f294
     && mkdir -p /app/workspace /app/workspace/.cache/huggingface
 
 EXPOSE 8080 8000

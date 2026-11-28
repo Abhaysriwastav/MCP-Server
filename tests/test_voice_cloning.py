@@ -318,6 +318,121 @@ class TestVoiceCloning(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_torch_device_falls_back_to_cpu_on_no_kernel_image(self) -> None:
+        from video_mcp.media.voice_cloner import _resolve_torch_device
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = types.SimpleNamespace(is_available=lambda: True)  # type: ignore[attr-defined]
+
+        def _failing_zeros(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+
+        fake_torch.zeros = _failing_zeros  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertEqual(_resolve_torch_device("auto"), "cpu")
+
+    def test_omnivoice_retries_on_cpu_when_cuda_kernel_fails(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            ref_wav = tmp_path / "ref.wav"
+            _write_sine_wav(ref_wav, duration_sec=0.5)
+
+            cfg = Settings(
+                workspace_dir=tmp_path / "ws",
+                db_path=tmp_path / "ws" / "test.db",
+                allowed_local_roots=[tmp_path],
+                release_dir=tmp_path / "ws" / "releases",
+                voice_provider="omnivoice",
+                omnivoice_device="cuda:0",
+            )
+            app = AppContext.create(cfg)
+            loaded_devices: list[object] = []
+
+            class FakeOmniVoice:
+                sampling_rate = 24000
+
+                def __init__(self, device: object) -> None:
+                    self.device = device
+
+                @classmethod
+                def from_pretrained(cls, model_id: str, **kwargs: object) -> FakeOmniVoice:
+                    loaded_devices.append(kwargs.get("device_map"))
+                    return cls(kwargs.get("device_map"))
+
+                def generate(self, **kwargs: object) -> list[np.ndarray]:
+                    if str(self.device).startswith("cuda"):
+                        raise RuntimeError(
+                            "CUDA error: no kernel image is available for execution on the device"
+                        )
+                    return [np.zeros(2400, dtype=np.float32)]
+
+            fake_ov = types.ModuleType("omnivoice")
+            fake_ov.OmniVoice = FakeOmniVoice  # type: ignore[attr-defined]
+            try:
+                with patch.dict(sys.modules, {"omnivoice": fake_ov}):
+                    out = asyncio.run(
+                        app.voice_cloner.synthesize(
+                            "Fallback test",
+                            tmp_path / "fallback.wav",
+                            reference_audio_path=ref_wav,
+                            language="en",
+                        )
+                    )
+                self.assertTrue(out.is_file())
+                self.assertEqual(loaded_devices, ["cuda:0", "cpu"])
+            finally:
+                app.close()
+
+    def test_transcriber_falls_back_to_cpu_on_cuda_kernel_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            media = tmp_path / "clip.wav"
+            _write_sine_wav(media, duration_sec=0.5)
+
+            cfg = Settings(
+                workspace_dir=tmp_path / "ws",
+                db_path=tmp_path / "ws" / "test.db",
+                allowed_local_roots=[tmp_path],
+                whisper_device="cuda",
+                whisper_compute_type="float16",
+            )
+            app = AppContext.create(cfg)
+            init_calls: list[tuple[object, object]] = []
+
+            class FakeSegment:
+                start = 0.0
+                end = 0.5
+                text = "CPU fallback transcript"
+                words = []
+
+            class FakeWhisperModel:
+                def __init__(self, model_name: str, device: object = "cpu", compute_type: object = "int8") -> None:
+                    self.device = device
+                    init_calls.append((device, compute_type))
+
+                def transcribe(self, *args: object, **kwargs: object) -> tuple[list[FakeSegment], object]:
+                    if self.device == "cuda":
+                        raise RuntimeError(
+                            "CUDA error: no kernel image is available for execution on the device"
+                        )
+                    return [FakeSegment()], None
+
+            fake_fw = types.ModuleType("faster_whisper")
+            fake_fw.WhisperModel = FakeWhisperModel  # type: ignore[attr-defined]
+            try:
+                with (
+                    patch.dict(sys.modules, {"faster_whisper": fake_fw}),
+                    patch.object(app.transcriber, "_decode_audio_input", return_value=str(media)),
+                ):
+                    segs = asyncio.run(app.transcriber.transcribe_media(media))
+                self.assertEqual(len(segs), 1)
+                self.assertEqual(segs[0].text, "CPU fallback transcript")
+                self.assertEqual(init_calls, [("cuda", "float16"), ("cpu", "int8")])
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()
